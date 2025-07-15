@@ -165,15 +165,6 @@ func main() {
 	}
 	s.SetRouteTable([]tcpip.Route{route})
 
-	// laddr, err := tcpip.ParseMACAddress("1c:0b:8b:12:35:3d")
-	// if err != nil {
-	// 	log.Fatalf("Failed to parse MAC address: %v", err)
-	// }
-	// e2 := s.AddStaticNeighbor(nicID, ipv4.ProtocolNumber, tcpip.AddrFrom4Slice(net.ParseIP("10.109.35.84").To4()), laddr)
-	// if e2 != nil {
-	// 	log.Fatalf("Failed to add static neighbor: %v", e2)
-	// }
-
 	listener, err := gonet.ListenTCP(s, tcpip.FullAddress{Port: uint16(80)}, protocol)
 	if err != nil {
 		log.Fatalf("Failed to listen on TCP port 80: %v", err)
