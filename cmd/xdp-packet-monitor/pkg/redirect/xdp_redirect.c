@@ -40,9 +40,9 @@ int xdp_redirect_prog(struct xdp_md *ctx)
     if (ip->protocol != IPPROTO_TCP)
         return XDP_PASS;
     
-    // // Check if destination IP matches 169.254.169.254
-    // if (ip->daddr != TARGET_IP)
-    //     return XDP_PASS;
+    // Check if destination IP matches 169.254.169.254
+    if (ip->daddr != TARGET_IP)
+        return XDP_PASS;
     
     struct tcphdr *tcp = (void *)(ip + 1);
     if ((void *)(tcp + 1) > data_end)
