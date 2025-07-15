@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"xdp-packet-monitor/pkg/staticarp"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -122,13 +123,14 @@ func main() {
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, arp.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol},
-		HandleLocal:        true,
 	})
 
 	nicID := tcpip.NICID(1)
 
+	sarp := staticarp.NewEndpoint(sn, s, nicID)
+
 	// Create and enable NIC
-	if err := s.CreateNIC(nicID, sn); err != nil {
+	if err := s.CreateNIC(nicID, sarp); err != nil {
 		log.Fatalf("Failed to create NIC: %v", err)
 	}
 	if err := s.EnableNIC(nicID); err != nil {
@@ -163,17 +165,14 @@ func main() {
 	}
 	s.SetRouteTable([]tcpip.Route{route})
 
-	laddr, err := tcpip.ParseMACAddress("1c:0b:8b:12:35:3d")
-	if err != nil {
-		log.Fatalf("Failed to parse MAC address: %v", err)
-	}
-	e2 := s.AddStaticNeighbor(nicID, ipv4.ProtocolNumber, tcpip.AddrFrom4Slice(net.ParseIP("10.109.35.84").To4()), laddr)
-	if e2 != nil {
-		log.Fatalf("Failed to add static neighbor: %v", e2)
-	}
-
-	neigh, _ := s.Neighbors(nicID, ipv4.ProtocolNumber)
-	log.Printf("Neighbors: %v", neigh)
+	// laddr, err := tcpip.ParseMACAddress("1c:0b:8b:12:35:3d")
+	// if err != nil {
+	// 	log.Fatalf("Failed to parse MAC address: %v", err)
+	// }
+	// e2 := s.AddStaticNeighbor(nicID, ipv4.ProtocolNumber, tcpip.AddrFrom4Slice(net.ParseIP("10.109.35.84").To4()), laddr)
+	// if e2 != nil {
+	// 	log.Fatalf("Failed to add static neighbor: %v", e2)
+	// }
 
 	listener, err := gonet.ListenTCP(s, tcpip.FullAddress{Port: uint16(80)}, protocol)
 	if err != nil {
