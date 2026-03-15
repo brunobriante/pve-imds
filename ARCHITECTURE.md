@@ -78,15 +78,6 @@ pve-imds/
 │   │   └── main.go
 │   └── pve-imds-meta/      # Metadata backend binary (planned)
 │       └── main.go
-├── internal/
-│   ├── cli/                # cobra/viper command setup (root, serve subcommands)
-│   ├── config/             # Config structs
-│   ├── ifwatch/            # Netlink tap interface watcher
-│   ├── vmid/               # Interface name parsing, VM identity resolution, cache
-│   ├── xdp/                # eBPF program (xdp_redirect.c), bpf2go bindings, AF_XDP socket management
-│   ├── proxy/              # HTTP proxy: header injection, unix socket forwarding
-│   ├── meta/               # Metadata backend: handler, identity document signing
-│   └── logging/            # slog setup, common fields
 ├── go.mod
 ├── go.sum
 ├── README.md
@@ -94,11 +85,9 @@ pve-imds/
 └── CLAUDE.md
 ```
 
-Each `internal/` package exposes an `fx.Module()` function consumed by the CLI layer, following the pattern in `~/git/repocache`.
-
 ## CLI and configuration
 
-Binaries use [spf13/cobra](https://github.com/spf13/cobra) for subcommand structure and [spf13/viper](https://github.com/spf13/viper) for configuration, consistent with `repocache`. [uber/fx](https://github.com/uber-go/fx) wires components together via dependency injection.
+Binaries use [spf13/cobra](https://github.com/spf13/cobra) for subcommand structure and [spf13/viper](https://github.com/spf13/viper) for configuration. [uber/fx](https://github.com/uber-go/fx) wires components together via dependency injection.
 
 Typical invocation:
 

@@ -20,10 +20,8 @@ The existing `cmd/xdp-packet-monitor/` and root-level `main.go` are **proof-of-c
 
 ## Architectural patterns
 
-Mirror `~/git/repocache` exactly:
-
-- **CLI**: `cobra` + `viper`. Root command in `internal/cli/root.go`, subcommands alongside it.
-- **DI**: `uber/fx`. Each `internal/` package exposes a `Module()` function (`fx.Module(...)`) with its providers. Commands register modules into the fx app; `main.go` just calls `cli.Execute()`.
+- **CLI**: `cobra` + `viper`.
+- **DI**: `uber/fx`
 - **Config**: Viper with struct unmarshaling. Config structs in `internal/config/`. Env prefix `PVE_IMDS_`. Layered: config file < env < flags.
 - **Logging**: `slog` via a shared `internal/logging` package. Structured fields everywhere.
 
