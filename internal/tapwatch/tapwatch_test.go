@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"testing"
 
@@ -110,4 +111,80 @@ func TestSingleLifecycle(t *testing.T) {
 		{Type: Created, Name: "tap110i0", Index: 20},
 		{Type: Deleted, Name: "tap110i0", Index: 20},
 	}, events)
+}
+
+// makeSink returns a simple EventSink that collects events into a slice.
+func makeSink() *collectingSink {
+	_, cancel := context.WithCancel(context.Background())
+	return &collectingSink{wantCount: 9999, cancel: cancel}
+}
+
+// TestScanEmitsTapInterfacesUp verifies that Scan emits Created events for
+// tap interfaces that are up and skips everything else.
+func TestScanEmitsTapInterfacesUp(t *testing.T) {
+	w := New(nil, slog.Default())
+	w.lister = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Index: 5, Name: "tap110i0", Flags: net.FlagUp},
+			{Index: 6, Name: "tap111i1", Flags: net.FlagUp},
+			{Index: 7, Name: "eth0", Flags: net.FlagUp},          // non-tap: skip
+			{Index: 8, Name: "tap112i0", Flags: 0},               // down: skip
+			{Index: 9, Name: "vmbr0", Flags: net.FlagUp},         // non-tap: skip
+			{Index: 10, Name: "tapnotanumber", Flags: net.FlagUp}, // no digits: skip
+		}, nil
+	}
+
+	sink := makeSink()
+	require.NoError(t, w.Scan(context.Background(), sink))
+
+	assert.Equal(t, []Event{
+		{Type: Created, Name: "tap110i0", Index: 5},
+		{Type: Created, Name: "tap111i1", Index: 6},
+	}, sink.events)
+}
+
+// TestScanNoDoubleEmitAfterRun verifies that Scan marks interfaces as seen so
+// that a subsequent Run does not re-emit Created for the same interface.
+func TestScanNoDoubleEmitAfterRun(t *testing.T) {
+	w := New(nil, slog.Default())
+	w.lister = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Index: 21, Name: "tap110i0", Flags: net.FlagUp},
+		}, nil
+	}
+
+	sink := makeSink()
+	require.NoError(t, w.Scan(context.Background(), sink))
+	require.Len(t, sink.events, 1)
+
+	// Calling Scan again should not re-emit for the same interface.
+	require.NoError(t, w.Scan(context.Background(), sink))
+	assert.Len(t, sink.events, 1, "Scan must not re-emit for already-seen interface")
+}
+
+// TestScanEmpty verifies that Scan with no matching interfaces emits nothing.
+func TestScanEmpty(t *testing.T) {
+	w := New(nil, slog.Default())
+	w.lister = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Index: 1, Name: "lo", Flags: net.FlagUp | net.FlagLoopback},
+			{Index: 2, Name: "eth0", Flags: net.FlagUp},
+		}, nil
+	}
+
+	sink := makeSink()
+	require.NoError(t, w.Scan(context.Background(), sink))
+	assert.Empty(t, sink.events)
+}
+
+// TestScanListerError verifies that Scan propagates errors from the lister.
+func TestScanListerError(t *testing.T) {
+	w := New(nil, slog.Default())
+	w.lister = func() ([]net.Interface, error) {
+		return nil, assert.AnError
+	}
+
+	sink := makeSink()
+	assert.ErrorIs(t, w.Scan(context.Background(), sink), assert.AnError)
+	assert.Empty(t, sink.events)
 }

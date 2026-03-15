@@ -7,9 +7,14 @@ import (
 	"context"
 	"encoding/binary"
 	"log/slog"
+	"net"
+	"regexp"
 
 	"github.com/mdlayher/netlink"
 )
+
+// tapIfaceRe matches Proxmox tap interface names: tap{vmid}i{netindex}.
+var tapIfaceRe = regexp.MustCompile(`^tap\d+i\d+$`)
 
 // Linux RTNETLINK constants not exported by the netlink package.
 const (
@@ -52,18 +57,49 @@ type ifKey struct {
 
 // Watcher distills RTNLGRP_LINK multicast messages into Created/Deleted events.
 type Watcher struct {
-	conn *netlink.Conn
-	seen map[ifKey]struct{} // keys for which Created has been emitted
-	log  *slog.Logger
+	conn   *netlink.Conn
+	seen   map[ifKey]struct{} // keys for which Created has been emitted
+	log    *slog.Logger
+	lister func() ([]net.Interface, error) // injectable for tests
 }
 
 // New creates a Watcher that reads from conn.
 func New(conn *netlink.Conn, log *slog.Logger) *Watcher {
 	return &Watcher{
-		conn: conn,
-		seen: make(map[ifKey]struct{}),
-		log:  log,
+		conn:   conn,
+		seen:   make(map[ifKey]struct{}),
+		log:    log,
+		lister: net.Interfaces,
 	}
+}
+
+// Scan enumerates existing network interfaces and emits a Created event for
+// each tap interface matching tap{vmid}i{netindex} that is currently up.
+// Call Scan before Run so that VMs already running when the daemon starts are
+// reported before the live netlink stream begins. Scan updates w.seen so that
+// Run will not re-emit Created for the same interfaces.
+func (w *Watcher) Scan(ctx context.Context, sink EventSink) error {
+	ifaces, err := w.lister()
+	if err != nil {
+		return err
+	}
+	for _, iface := range ifaces {
+		if !tapIfaceRe.MatchString(iface.Name) {
+			continue
+		}
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		key := ifKey{name: iface.Name, index: int32(iface.Index)}
+		if _, already := w.seen[key]; already {
+			continue
+		}
+		w.seen[key] = struct{}{}
+		ev := Event{Type: Created, Name: iface.Name, Index: int32(iface.Index)}
+		w.log.DebugContext(ctx, "emitting startup event", "name", ev.Name, "index", ev.Index)
+		sink.HandleLinkEvent(ctx, ev)
+	}
+	return nil
 }
 
 // EventSink receives tap interface lifecycle events.

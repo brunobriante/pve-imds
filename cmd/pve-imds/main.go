@@ -136,6 +136,9 @@ func registerWatcher(lc fx.Lifecycle, w *tapwatch.Watcher, sink tapwatch.EventSi
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
 			log.Info("starting tap interface watcher")
+			if err := w.Scan(ctx, sink); err != nil {
+				return fmt.Errorf("initial interface scan: %w", err)
+			}
 			go func() {
 				if err := w.Run(ctx, sink); err != nil {
 					log.Error("tap watcher exited", "err", err)
