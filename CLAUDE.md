@@ -16,8 +16,6 @@ cmd/pve-imds-meta/      # metadata backend (planned)
 internal/               # all shared packages
 ```
 
-The existing `cmd/xdp-packet-monitor/` and root-level `main.go` are **proof-of-concept code** to be cleaned up and restructured. Do not treat them as the target architecture.
-
 ## Architectural patterns
 
 - **CLI**: `cobra` + `viper`.
