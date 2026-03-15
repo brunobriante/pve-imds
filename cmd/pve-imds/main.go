@@ -14,6 +14,7 @@ import (
 
 	"github.com/wyattanderson/pve-imds/internal/config"
 	"github.com/wyattanderson/pve-imds/internal/logging"
+	"github.com/wyattanderson/pve-imds/internal/manager"
 	"github.com/wyattanderson/pve-imds/internal/tapwatch"
 )
 
@@ -91,7 +92,9 @@ func runServe(fxLogging bool) error {
 		fxLogger,
 		fx.Provide(newNetlinkConn),
 		fx.Provide(tapwatch.New),
-		fx.Provide(newLoggingSink),
+		fx.Provide(manager.New),
+		fx.Provide(func(m *manager.Manager) tapwatch.EventSink { return m }),
+		fx.Invoke(manager.Register),
 		fx.Invoke(registerWatcher),
 	)
 
@@ -110,23 +113,6 @@ func newNetlinkConn() (*netlink.Conn, error) {
 		return nil, fmt.Errorf("join RTNLGRP_LINK: %w", err)
 	}
 	return conn, nil
-}
-
-// loggingEventSink logs tap interface lifecycle events via slog.
-type loggingEventSink struct {
-	log *slog.Logger
-}
-
-func newLoggingSink(log *slog.Logger) tapwatch.EventSink {
-	return &loggingEventSink{log: log}
-}
-
-func (s *loggingEventSink) HandleLinkEvent(ctx context.Context, ev tapwatch.Event) {
-	typ := "created"
-	if ev.Type == tapwatch.Deleted {
-		typ = "deleted"
-	}
-	s.log.InfoContext(ctx, "tap interface event", "event", typ, "name", ev.Name, "index", ev.Index)
 }
 
 // registerWatcher wires the Watcher into the fx lifecycle: Run starts on
