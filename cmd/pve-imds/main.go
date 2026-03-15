@@ -13,6 +13,7 @@ import (
 	"go.uber.org/fx/fxevent"
 
 	"github.com/wyattanderson/pve-imds/internal/config"
+	"github.com/wyattanderson/pve-imds/internal/iface"
 	"github.com/wyattanderson/pve-imds/internal/logging"
 	"github.com/wyattanderson/pve-imds/internal/manager"
 	"github.com/wyattanderson/pve-imds/internal/tapwatch"
@@ -92,6 +93,7 @@ func runServe(fxLogging bool) error {
 		fxLogger,
 		fx.Provide(newNetlinkConn),
 		fx.Provide(tapwatch.New),
+		fx.Provide(iface.NewFactory),
 		fx.Provide(manager.New),
 		fx.Provide(func(m *manager.Manager) tapwatch.EventSink { return m }),
 		fx.Invoke(manager.Register),

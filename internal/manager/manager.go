@@ -34,11 +34,11 @@ type Manager struct {
 	active  map[string]*managedIface
 }
 
-// New constructs a Manager with a stub runtime factory.
-func New(log *slog.Logger) *Manager {
+// New constructs a Manager with the given runtime factory.
+func New(log *slog.Logger, factory RuntimeFactory) *Manager {
 	return &Manager{
 		log:     log,
-		factory: stubRuntimeFactory,
+		factory: factory,
 		events:  make(chan tapwatch.Event, 64),
 		active:  make(map[string]*managedIface),
 	}

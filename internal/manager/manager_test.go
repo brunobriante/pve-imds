@@ -13,7 +13,7 @@ import (
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	log := slog.Default()
-	m := New(log)
+	m := New(log, stubRuntimeFactory)
 	return m
 }
 
