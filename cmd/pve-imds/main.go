@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 
+	"github.com/mdlayher/netlink"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/wyattanderson/pve-imds/internal/config"
 	"github.com/wyattanderson/pve-imds/internal/logging"
+	"github.com/wyattanderson/pve-imds/internal/tapwatch"
 )
 
 func main() {
@@ -85,9 +89,58 @@ func runServe(fxLogging bool) error {
 		fx.Supply(cfg),
 		fx.Supply(logger),
 		fxLogger,
-		fx.Invoke(func() {}), // placeholder; real components added later
+		fx.Provide(newNetlinkConn),
+		fx.Provide(tapwatch.New),
+		fx.Provide(newLoggingSink),
+		fx.Invoke(registerWatcher),
 	)
 
 	app.Run()
 	return nil
+}
+
+// newNetlinkConn opens a NETLINK_ROUTE socket subscribed to RTNLGRP_LINK.
+func newNetlinkConn() (*netlink.Conn, error) {
+	conn, err := netlink.Dial(0, nil) // 0 = NETLINK_ROUTE
+	if err != nil {
+		return nil, fmt.Errorf("dial netlink: %w", err)
+	}
+	if err := conn.JoinGroup(1); err != nil { // 1 = RTNLGRP_LINK
+		conn.Close()
+		return nil, fmt.Errorf("join RTNLGRP_LINK: %w", err)
+	}
+	return conn, nil
+}
+
+// loggingEventSink logs tap interface lifecycle events via slog.
+type loggingEventSink struct {
+	log *slog.Logger
+}
+
+func newLoggingSink(log *slog.Logger) tapwatch.EventSink {
+	return &loggingEventSink{log: log}
+}
+
+func (s *loggingEventSink) HandleLinkEvent(ctx context.Context, ev tapwatch.Event) {
+	typ := "created"
+	if ev.Type == tapwatch.Deleted {
+		typ = "deleted"
+	}
+	s.log.InfoContext(ctx, "tap interface event", "event", typ, "name", ev.Name, "index", ev.Index)
+}
+
+// registerWatcher wires the Watcher into the fx lifecycle: Run starts on
+// OnStart and is stopped by cancelling its context on OnStop.
+func registerWatcher(lc fx.Lifecycle, w *tapwatch.Watcher, sink tapwatch.EventSink, log *slog.Logger) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			log.Info("starting tap interface watcher")
+			go func() {
+				if err := w.Run(ctx, sink); err != nil {
+					log.Error("tap watcher exited", "err", err)
+				}
+			}()
+			return nil
+		},
+	})
 }
