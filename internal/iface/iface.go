@@ -31,29 +31,30 @@ import (
 // Runtime is the per-interface worker. It sets up an AF_XDP socket, attaches
 // an XDP program to redirect IMDS traffic, and serves HTTP on the gvisor stack.
 type Runtime struct {
-	log  *slog.Logger
-	name string
+	log     *slog.Logger
+	ifindex int32  // primary identifier
+	name    string // for logging/debugging only
 }
 
-// New constructs a Runtime for the named tap interface.
-func New(log *slog.Logger, name string) *Runtime {
-	return &Runtime{log: log, name: name}
+// New constructs a Runtime for the given tap interface.
+func New(log *slog.Logger, ifindex int32, name string) *Runtime {
+	return &Runtime{log: log, ifindex: ifindex, name: name}
 }
 
 // NewFactory returns a manager.RuntimeFactory that constructs a Runtime for
 // each tap interface, sharing the provided logger.
 func NewFactory(log *slog.Logger) manager.RuntimeFactory {
-	return func(name string) manager.InterfaceRuntime {
-		return New(log, name)
+	return func(ifindex int32, name string) manager.InterfaceRuntime {
+		return New(log, ifindex, name)
 	}
 }
 
 // Run implements manager.InterfaceRuntime. It blocks until ctx is cancelled or
 // a fatal error occurs.
 func (r *Runtime) Run(ctx context.Context) error {
-	iface, err := net.InterfaceByName(r.name)
+	iface, err := net.InterfaceByIndex(int(r.ifindex))
 	if err != nil {
-		return fmt.Errorf("get interface %s: %w", r.name, err)
+		return fmt.Errorf("get interface %d (%s): %w", r.ifindex, r.name, err)
 	}
 
 	sockfd, err := syscall.Socket(unix.AF_XDP, syscall.SOCK_RAW, 0)

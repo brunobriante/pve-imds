@@ -47,16 +47,16 @@ func TestStartStop(t *testing.T) {
 	m := newTestManager(t)
 
 	started := make(chan struct{})
-	m.factory = func(name string) InterfaceRuntime {
+	m.factory = func(_ int32, _ string) InterfaceRuntime {
 		return &blockingRuntime{started: started}
 	}
 
 	ctx := startLoop(t, m)
 
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0"})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0", Index: 10})
 	<-started // runtime is running
 
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Deleted, Name: "tap100i0"})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Deleted, Name: "tap100i0", Index: 10})
 
 	// Give the event loop time to process the delete.
 	deadline := time.Now().Add(time.Second)
@@ -77,17 +77,17 @@ func TestDeleteDuringStart(t *testing.T) {
 	m := newTestManager(t)
 
 	started := make(chan struct{})
-	m.factory = func(name string) InterfaceRuntime {
+	m.factory = func(_ int32, _ string) InterfaceRuntime {
 		return &blockingRuntime{started: started}
 	}
 
 	ctx := startLoop(t, m)
 
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0"})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0", Index: 10})
 	<-started // runtime is now blocking in Run
 
 	// Send delete while runtime is running.
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Deleted, Name: "tap100i0"})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Deleted, Name: "tap100i0", Index: 10})
 
 	// Verify clean exit: map should be empty.
 	deadline := time.Now().Add(time.Second)
@@ -108,7 +108,7 @@ func TestStopAllOnContextCancel(t *testing.T) {
 
 	type startedEntry struct{ name string }
 	allStarted := make(chan startedEntry, 10)
-	m.factory = func(name string) InterfaceRuntime {
+	m.factory = func(_ int32, name string) InterfaceRuntime {
 		started := make(chan struct{})
 		go func() { <-started; allStarted <- startedEntry{name} }()
 		return &blockingRuntime{started: started}
@@ -118,8 +118,8 @@ func TestStopAllOnContextCancel(t *testing.T) {
 	loopDone := make(chan struct{})
 	go func() { defer close(loopDone); m.run(ctx) }()
 
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0"})
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap101i0"})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0", Index: 10})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap101i0", Index: 11})
 
 	// Wait for both to start.
 	<-allStarted
@@ -139,7 +139,7 @@ func TestHandleLinkEventDoesNotBlock(t *testing.T) {
 
 	// Fill the buffer.
 	for i := 0; i < 64; i++ {
-		m.events <- tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0"}
+		m.events <- tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0", Index: 10}
 	}
 
 	// A cancelled context should cause HandleLinkEvent to take the Done arm
@@ -150,7 +150,7 @@ func TestHandleLinkEventDoesNotBlock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap999i0"})
+		m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap999i0", Index: 99})
 	}()
 
 	select {
@@ -164,15 +164,15 @@ func TestStartDuplicateIgnored(t *testing.T) {
 	m := newTestManager(t)
 
 	var callCount atomic.Int32
-	m.factory = func(name string) InterfaceRuntime {
+	m.factory = func(_ int32, _ string) InterfaceRuntime {
 		callCount.Add(1)
 		return &blockingRuntime{started: make(chan struct{})}
 	}
 
 	ctx := startLoop(t, m)
 
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0"})
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0"})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0", Index: 10})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Created, Name: "tap100i0", Index: 10})
 
 	// Let events drain.
 	time.Sleep(20 * time.Millisecond)
@@ -187,7 +187,7 @@ func TestDeleteUnknownIgnored(t *testing.T) {
 	ctx := startLoop(t, m)
 
 	// Should not panic.
-	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Deleted, Name: "tap999i0"})
+	m.HandleLinkEvent(ctx, tapwatch.Event{Type: tapwatch.Deleted, Name: "tap999i0", Index: 99})
 
 	time.Sleep(20 * time.Millisecond) // let event drain
 }

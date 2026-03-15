@@ -16,11 +16,13 @@ type InterfaceRuntime interface {
 	Run(ctx context.Context) error
 }
 
-// RuntimeFactory constructs an InterfaceRuntime for a named tap interface.
+// RuntimeFactory constructs an InterfaceRuntime for a tap interface.
+// ifindex is the primary key; name is provided for logging/debugging.
 // Stored as unexported field on Manager; tests override directly (same package).
-type RuntimeFactory func(name string) InterfaceRuntime
+type RuntimeFactory func(ifindex int32, name string) InterfaceRuntime
 
 type managedIface struct {
+	name   string
 	cancel context.CancelFunc
 	done   chan struct{} // closed when Run returns
 }
@@ -31,7 +33,7 @@ type Manager struct {
 	log     *slog.Logger
 	factory RuntimeFactory
 	events  chan tapwatch.Event
-	active  map[string]*managedIface
+	active  map[int32]*managedIface // keyed by ifindex
 }
 
 // New constructs a Manager with the given runtime factory.
@@ -40,7 +42,7 @@ func New(log *slog.Logger, factory RuntimeFactory) *Manager {
 		log:     log,
 		factory: factory,
 		events:  make(chan tapwatch.Event, 64),
-		active:  make(map[string]*managedIface),
+		active:  make(map[int32]*managedIface),
 	}
 }
 
@@ -63,51 +65,51 @@ func (m *Manager) run(ctx context.Context) {
 		case ev := <-m.events:
 			switch ev.Type {
 			case tapwatch.Created:
-				m.startIface(ctx, ev.Name)
+				m.startIface(ctx, ev.Index, ev.Name)
 			case tapwatch.Deleted:
-				m.stopIface(ev.Name)
+				m.stopIface(ev.Index)
 			}
 		}
 	}
 }
 
-func (m *Manager) startIface(parentCtx context.Context, name string) {
-	if _, exists := m.active[name]; exists {
-		m.log.Warn("duplicate Created event, ignoring", "name", name)
+func (m *Manager) startIface(parentCtx context.Context, ifindex int32, name string) {
+	if _, exists := m.active[ifindex]; exists {
+		m.log.Warn("duplicate Created event, ignoring", "ifindex", ifindex, "name", name)
 		return
 	}
-	rt := m.factory(name)
+	rt := m.factory(ifindex, name)
 	ctx, cancel := context.WithCancel(parentCtx)
-	mi := &managedIface{cancel: cancel, done: make(chan struct{})}
-	m.active[name] = mi
+	mi := &managedIface{name: name, cancel: cancel, done: make(chan struct{})}
+	m.active[ifindex] = mi
 	go func() {
 		defer close(mi.done)
 		if err := rt.Run(ctx); err != nil && ctx.Err() == nil {
-			m.log.Error("runtime exited with error", "name", name, "err", err)
+			m.log.Error("runtime exited with error", "ifindex", ifindex, "name", name, "err", err)
 		}
 	}()
-	m.log.Info("started interface runtime", "name", name)
+	m.log.Info("started interface runtime", "ifindex", ifindex, "name", name)
 }
 
-func (m *Manager) stopIface(name string) {
-	mi, exists := m.active[name]
+func (m *Manager) stopIface(ifindex int32) {
+	mi, exists := m.active[ifindex]
 	if !exists {
-		m.log.Warn("Deleted event for unknown interface, ignoring", "name", name)
+		m.log.Warn("Deleted event for unknown interface, ignoring", "ifindex", ifindex)
 		return
 	}
-	delete(m.active, name)
+	delete(m.active, ifindex)
 	mi.cancel()
 	<-mi.done
-	m.log.Info("stopped interface runtime", "name", name)
+	m.log.Info("stopped interface runtime", "ifindex", ifindex, "name", mi.name)
 }
 
 func (m *Manager) stopAll() {
-	for name, mi := range m.active {
+	for ifindex, mi := range m.active {
 		mi.cancel()
 		<-mi.done
-		m.log.Info("stopped interface runtime", "name", name)
+		m.log.Info("stopped interface runtime", "ifindex", ifindex, "name", mi.name)
 	}
-	m.active = make(map[string]*managedIface)
+	m.active = make(map[int32]*managedIface)
 }
 
 // Register is an fx.Invoke target that wires the manager's event loop into
@@ -129,13 +131,16 @@ func Register(lc fx.Lifecycle, m *Manager) {
 }
 
 // stubRuntime blocks until ctx is cancelled. Used as the default factory.
-type stubRuntime struct{ name string }
+type stubRuntime struct {
+	ifindex int32
+	name    string
+}
 
 func (r *stubRuntime) Run(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
 }
 
-func stubRuntimeFactory(name string) InterfaceRuntime {
-	return &stubRuntime{name: name}
+func stubRuntimeFactory(ifindex int32, name string) InterfaceRuntime {
+	return &stubRuntime{ifindex: ifindex, name: name}
 }
