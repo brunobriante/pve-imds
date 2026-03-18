@@ -70,6 +70,8 @@ Cache entries are keyed by tap interface name and invalidated on inotify events 
 
 Follow the testing pyramid (see ARCHITECTURE.md). Write unit tests in `_test.go` files alongside the package. Integration tests that require a Linux kernel with BPF support go in `internal/*/integration_test.go` with a build tag `//go:build integration`. E2E/smoke tests are out of scope for this repo for now.
 
+Use `github.com/stretchr/testify` for all test assertions. Prefer `require` for fatal checks (wrong type, missing map key, error from the function under test) and `assert` for non-fatal field comparisons so that all failures in a case are reported together. Do not use the standard `t.Errorf`/`t.Fatalf` pattern.
+
 Define interfaces for:
 - Identity resolver (`internal/vmid`)
 - XDP manager (`internal/xdp`)

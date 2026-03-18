@@ -129,7 +129,6 @@ func (w *Watcher) Run(ctx context.Context, sink EventSink) error {
 			}
 			return err
 		}
-		w.log.DebugContext(ctx, "received netlink messages", "count", len(msgs))
 		for _, msg := range msgs {
 			if ev, ok := w.process(msg); ok {
 				w.log.DebugContext(ctx, "emitting event", "event", ev.Type, "name", ev.Name, "index", ev.Index)
