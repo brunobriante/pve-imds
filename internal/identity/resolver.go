@@ -203,6 +203,33 @@ func (r *Resolver) populate(ctx context.Context, ifname string, ifindex int32) e
 	return nil
 }
 
+// RecordByName returns the cached VMRecord for ifname, verifying that the
+// kernel ifindex still matches the one recorded at population time. This guards
+// against a tap interface being deleted and recreated (with a new VM) before
+// the old per-interface Runtime has been torn down.
+//
+// Source MAC and process start-time are not checked because they are not
+// available at the HTTP handler layer.
+func (r *Resolver) RecordByName(ifname string, ifindex int32) (*VMRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.entries[ifname]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if e.ifindex != ifindex {
+		return nil, ErrIfindexMismatch
+	}
+	return &VMRecord{
+		Node:        r.node,
+		VMID:        e.vmid,
+		NetIndex:    e.netIndex,
+		IfIndex:     e.ifindex,
+		Config:      e.config,
+		ProcessInfo: e.processInfo,
+	}, nil
+}
+
 // invalidate removes the cache entry for ifname, if present.
 func (r *Resolver) invalidate(ifname string) {
 	r.mu.Lock()

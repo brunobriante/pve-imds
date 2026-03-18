@@ -17,6 +17,7 @@ import (
 	xdplink "gvisor.dev/gvisor/pkg/tcpip/link/xdp"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 
+	"github.com/wyattanderson/pve-imds/internal/identity"
 	"github.com/wyattanderson/pve-imds/internal/manager"
 	"github.com/wyattanderson/pve-imds/internal/xdp"
 )
@@ -24,21 +25,22 @@ import (
 // Runtime is the per-interface worker. It sets up an AF_XDP socket, attaches
 // an XDP program to redirect IMDS traffic, and serves HTTP on the gvisor stack.
 type Runtime struct {
-	log     *slog.Logger
-	ifindex int32  // primary identifier
-	name    string // for logging/debugging only
+	log      *slog.Logger
+	resolver *identity.Resolver
+	ifindex  int32  // primary identifier
+	name     string // for logging/debugging only
 }
 
 // New constructs a Runtime for the given tap interface.
-func New(log *slog.Logger, ifindex int32, name string) *Runtime {
-	return &Runtime{log: log, ifindex: ifindex, name: name}
+func New(log *slog.Logger, resolver *identity.Resolver, ifindex int32, name string) *Runtime {
+	return &Runtime{log: log, resolver: resolver, ifindex: ifindex, name: name}
 }
 
 // NewFactory returns a manager.RuntimeFactory that constructs a Runtime for
-// each tap interface, sharing the provided logger.
-func NewFactory(log *slog.Logger) manager.RuntimeFactory {
+// each tap interface, sharing the provided logger and identity resolver.
+func NewFactory(log *slog.Logger, resolver *identity.Resolver) manager.RuntimeFactory {
 	return func(ifindex int32, name string) manager.InterfaceRuntime {
-		return New(log, ifindex, name)
+		return New(log, resolver, ifindex, name)
 	}
 }
 
@@ -92,8 +94,27 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Hello, %s!", r.name)
+		rec, err := r.resolver.RecordByName(r.name, r.ifindex)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("identity lookup failed: %v", err), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "node:     %s\n", rec.Node)
+		fmt.Fprintf(w, "vmid:     %d\n", rec.VMID)
+		fmt.Fprintf(w, "netindex: %d\n", rec.NetIndex)
+		fmt.Fprintf(w, "pid:      %d\n", rec.ProcessInfo.PID)
+		fmt.Fprintf(w, "\n[vmconfig]\n")
+		fmt.Fprintf(w, "name:        %s\n", rec.Config.Name)
+		fmt.Fprintf(w, "ostype:      %s\n", rec.Config.OSType)
+		fmt.Fprintf(w, "description: %s\n", rec.Config.Description)
+		fmt.Fprintf(w, "tags:        %v\n", rec.Config.Tags)
+		for idx, dev := range rec.Config.Networks {
+			fmt.Fprintf(w, "net%d:        model=%s mac=%s bridge=%s\n", idx, dev.Model, dev.MAC, dev.Bridge)
+		}
+		for k, v := range rec.Config.Raw {
+			fmt.Fprintf(w, "%s: %s\n", k, v)
+		}
 	})
 	return serveIMDS(ctx, listener, mux)
 }
