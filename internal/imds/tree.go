@@ -63,7 +63,7 @@ func (n *treeNode) lookup(path string) (*treeNode, bool) {
 		return n, true
 	}
 	cur := n
-	for _, seg := range strings.Split(path, "/") {
+	for seg := range strings.SplitSeq(path, "/") {
 		if seg == "" {
 			continue
 		}

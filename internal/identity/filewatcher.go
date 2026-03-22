@@ -137,6 +137,12 @@ func (fw *FileWatcher) handleEvent(ev fsnotify.Event) {
 			fw.schedule(fw.confTimers, vmid, func() { fw.resolver.ReloadConfig(vmid) })
 		case ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename):
 			fw.log.Debug("identity: conf removed, invalidating entries", "vmid", vmid, "path", ev.Name)
+			fw.mu.Lock()
+			if t, ok := fw.confTimers[vmid]; ok {
+				t.Stop()
+				delete(fw.confTimers, vmid)
+			}
+			fw.mu.Unlock()
 			fw.resolver.invalidateByVMID(vmid)
 		}
 		return
