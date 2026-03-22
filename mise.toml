@@ -17,6 +17,10 @@ run = """
 PYTHONPATH=${CLOUD_INIT_DIR:-$HOME/git/cloud-init} uv run --project . pytest -v --tb=short .
 """
 
+[tasks.generate]
+description = "Run go generate for XDP bindings"
+run = "go generate ./internal/xdp/..."
+
 [tasks.lint]
 run = "golangci-lint run"
 
@@ -24,4 +28,5 @@ run = "golangci-lint run"
 run = "golangci-lint fmt"
 
 [tools]
+"go:github.com/goreleaser/goreleaser/v2" = "latest"
 golangci-lint = "latest"
