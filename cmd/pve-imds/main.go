@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/pprof"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -30,6 +32,7 @@ func main() {
 func newRootCmd() *cobra.Command {
 	var cfgFile string
 	var fxLogging bool
+	var pprofAddr string
 
 	root := &cobra.Command{
 		Use:   "pve-imds",
@@ -38,7 +41,7 @@ func newRootCmd() *cobra.Command {
 			return initConfig(cfgFile)
 		},
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return runServe(fxLogging)
+			return runServe(fxLogging, pprofAddr)
 		},
 	}
 
@@ -47,6 +50,7 @@ func newRootCmd() *cobra.Command {
 	pf.BoolVar(&fxLogging, "fx-logging", false, "enable fx lifecycle logging")
 	pf.String("log-level", "info", "log level (debug, info, warn, error)")
 	pf.String("socket-path", "/run/pve-imds/meta.sock", "Unix socket path for metadata backend")
+	pf.StringVar(&pprofAddr, "pprof-addr", "", "address to serve pprof endpoints (e.g. localhost:6060); disabled if unset")
 
 	if err := viper.BindPFlag("log_level", pf.Lookup("log-level")); err != nil {
 		panic(err)
@@ -75,7 +79,7 @@ func initConfig(cfgFile string) error {
 	return viper.ReadInConfig()
 }
 
-func runServe(fxLogging bool) error {
+func runServe(fxLogging bool, pprofAddr string) error {
 	var cfg config.Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return fmt.Errorf("unmarshal config: %w", err)
@@ -86,6 +90,36 @@ func runServe(fxLogging bool) error {
 	fxLogger := fx.NopLogger
 	if fxLogging {
 		fxLogger = fx.WithLogger(func() fxevent.Logger { return &fxevent.SlogLogger{Logger: logger} })
+	}
+
+	var pprofOpt fx.Option
+	if pprofAddr != "" {
+		addr := pprofAddr
+		pprofOpt = fx.Invoke(func(lc fx.Lifecycle) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/debug/pprof/", pprof.Index)
+			mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+			mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+			mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+			mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+			srv := &http.Server{Addr: addr, Handler: mux}
+			lc.Append(fx.Hook{
+				OnStart: func(ctx context.Context) error {
+					lc := &net.ListenConfig{}
+					ln, err := lc.Listen(ctx, "tcp", addr)
+					if err != nil {
+						return fmt.Errorf("pprof listen %s: %w", addr, err)
+					}
+					go func() { _ = srv.Serve(ln) }()
+					return nil
+				},
+				OnStop: func(ctx context.Context) error {
+					return srv.Shutdown(ctx)
+				},
+			})
+		})
+	} else {
+		pprofOpt = fx.Options()
 	}
 
 	app := fx.New(
@@ -104,6 +138,7 @@ func runServe(fxLogging bool) error {
 		fx.Invoke(manager.Register),
 		identity.Module,
 		fx.Invoke(tapwatch.Register),
+		pprofOpt,
 	)
 
 	startCtx, startCancel := context.WithTimeout(context.Background(), app.StartTimeout())
