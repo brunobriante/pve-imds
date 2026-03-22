@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -41,13 +42,9 @@ func ParseConfig(raw []byte) (*VMConfig, error) {
 		}
 
 		// Comment line: accumulate into description.
+		// Proxmox writes '#' + content with no separator, so strip only '#'.
 		if strings.HasPrefix(line, "#") {
-			// Strip the '#' and one optional space.
-			rest := line[1:]
-			if len(rest) > 0 && rest[0] == ' ' {
-				rest = rest[1:]
-			}
-			descLines = append(descLines, rest)
+			descLines = append(descLines, line[1:])
 			continue
 		}
 
@@ -73,7 +70,12 @@ func ParseConfig(raw []byte) (*VMConfig, error) {
 			cfg.Tags = parseTags(val)
 		case "description":
 			// An explicit "description:" key overrides comment-accumulated lines.
-			cfg.Description = val
+			// Proxmox percent-encodes the value (e.g. %3A for ':', %0A for newline).
+			if decoded, err := url.PathUnescape(val); err == nil {
+				cfg.Description = decoded
+			} else {
+				cfg.Description = val
+			}
 		default:
 			if m := netKeyRe.FindStringSubmatch(key); m != nil {
 				idx, _ := strconv.Atoi(m[1])
@@ -95,7 +97,12 @@ func ParseConfig(raw []byte) (*VMConfig, error) {
 	// Only use comment-accumulated description if no explicit "description:" key
 	// was present (the switch case above sets cfg.Description directly).
 	if cfg.Description == "" && len(descLines) > 0 {
-		cfg.Description = strings.Join(descLines, "\n")
+		joined := strings.Join(descLines, "\n")
+		if decoded, err := url.PathUnescape(joined); err == nil {
+			cfg.Description = decoded
+		} else {
+			cfg.Description = joined
+		}
 	}
 
 	return cfg, nil

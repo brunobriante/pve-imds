@@ -140,6 +140,57 @@ func TestDigestCoversEntireFile(t *testing.T) {
 	assert.NotEqual(t, cfg.Digest, cfg2.Digest)
 }
 
+// TestEncodedDescription verifies that a percent-encoded description: value is decoded.
+func TestEncodedDescription(t *testing.T) {
+	raw := readFixture(t, "encoded_desc.conf")
+	cfg, err := ParseConfig(raw)
+	require.NoError(t, err)
+
+	want := "#cloud-config\nfinal_message: cloud-init complete\nfqdn: imdstest01.lab.wya.tt"
+	assert.Equal(t, want, cfg.Description)
+}
+
+// TestCommentDescriptionDecoded verifies that percent-encoded characters in
+// comment-accumulated descriptions are decoded, covering the case where user-data
+// is embedded in the VM description via comment lines.
+func TestCommentDescriptionDecoded(t *testing.T) {
+	raw := []byte(
+		"#<!--#user-data\n" +
+			"##cloud-config\n" +
+			"#final_message%3A cloud-init complete\n" +
+			"#fqdn%3A imdstest01.lab.wya.tt\n" +
+			"#package_upgrade%3A true\n" +
+			"#-->\n" +
+			"name: imdstest01\n",
+	)
+	cfg, err := ParseConfig(raw)
+	require.NoError(t, err)
+
+	want := "<!--#user-data\n#cloud-config\nfinal_message: cloud-init complete\nfqdn: imdstest01.lab.wya.tt\npackage_upgrade: true\n-->"
+	assert.Equal(t, want, cfg.Description)
+}
+
+// TestCommentDescriptionIndentation verifies that leading spaces in comment lines
+// are preserved exactly. Proxmox writes '#' + content with no separator space, so
+// stripping only '#' must leave all indentation intact for embedded YAML.
+func TestCommentDescriptionIndentation(t *testing.T) {
+	raw := []byte(
+		"#<!--#user-data\n" +
+			"##cloud-config\n" +
+			"#write_files%3A\n" +
+			"#- content%3A Hello\n" +
+			"#  owner%3A root%3Aroot\n" +
+			"#  permissions%3A '0644'\n" +
+			"#-->\n" +
+			"name: imdstest01\n",
+	)
+	cfg, err := ParseConfig(raw)
+	require.NoError(t, err)
+
+	want := "<!--#user-data\n#cloud-config\nwrite_files:\n- content: Hello\n  owner: root:root\n  permissions: '0644'\n-->"
+	assert.Equal(t, want, cfg.Description)
+}
+
 // TestMalformedNet verifies that a net entry with no '=' returns an error.
 func TestMalformedNet(t *testing.T) {
 	_, err := ParseConfig([]byte("net0: virtioNOEQUALS,bridge=vmbr0\n"))
