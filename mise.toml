@@ -27,6 +27,9 @@ run = "golangci-lint run"
 [tasks.fmt]
 run = "golangci-lint fmt"
 
+[tasks.snapshot]
+run = "goreleaser release --snapshot --clean"
+
 [tools]
 "go:github.com/goreleaser/goreleaser/v2" = "latest"
 golangci-lint = "latest"
