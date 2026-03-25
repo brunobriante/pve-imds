@@ -11,11 +11,32 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/spf13/afero"
 
 	"github.com/wyattanderson/pve-imds/internal/tapwatch"
 	"github.com/wyattanderson/pve-imds/internal/vmconfig"
+)
+
+var (
+	lookupTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pve_imds_identity_lookups_total",
+		Help: "Total identity Lookup calls, by result.",
+	}, []string{"result"})
+
+	lookupDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "pve_imds_identity_lookup_duration_seconds",
+		Help:    "Latency of identity Lookup calls.",
+		Buckets: prometheus.ExponentialBuckets(0.000025, 2, 12), // 25µs–51ms
+	})
+
+	cacheEntries = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "pve_imds_identity_cache_entries",
+		Help: "Current number of entries in the identity resolver cache.",
+	})
 )
 
 // tapIfaceRe matches and captures vmid and netIndex from tap interface names.
@@ -61,27 +82,35 @@ func New(fs afero.Fs, log *slog.Logger) (*Resolver, error) {
 //
 // All three checks must pass; any failure returns a sentinel error.
 func (r *Resolver) Lookup(ifname string, ifindex int32, srcMAC net.HardwareAddr) (*VMRecord, error) {
+	start := time.Now()
+	defer func() { lookupDuration.Observe(time.Since(start).Seconds()) }()
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	e, ok := r.entries[ifname]
 	if !ok {
+		lookupTotal.WithLabelValues("not_found").Inc()
 		return nil, ErrNotFound
 	}
 
 	if e.ifindex != ifindex {
+		lookupTotal.WithLabelValues("ifindex_mismatch").Inc()
 		return nil, ErrIfindexMismatch
 	}
 
 	dev, ok := e.config.Networks[e.netIndex]
 	if !ok {
+		lookupTotal.WithLabelValues("network_not_found").Inc()
 		return nil, ErrNetworkNotFound
 	}
 
 	if !bytes.Equal(dev.MAC, srcMAC) {
+		lookupTotal.WithLabelValues("mac_mismatch").Inc()
 		return nil, ErrMACMismatch
 	}
 
+	lookupTotal.WithLabelValues("ok").Inc()
 	return &VMRecord{
 		Node:     r.node,
 		VMID:     e.vmid,
@@ -154,6 +183,7 @@ func (r *Resolver) populate(ctx context.Context, ifname string, ifindex int32) e
 		ifindex:  ifindex,
 		config:   cfg,
 	}
+	cacheEntries.Inc()
 	r.addIfname(vmid, ifname)
 
 	return nil
@@ -194,6 +224,7 @@ func (r *Resolver) invalidate(ifname string) {
 	}
 	r.log.Debug("identity: evicting cache entry", "ifname", ifname, "vmid", e.vmid)
 	delete(r.entries, ifname)
+	cacheEntries.Dec()
 	r.removeIfname(e.vmid, ifname)
 }
 

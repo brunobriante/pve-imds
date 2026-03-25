@@ -6,9 +6,26 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/fx"
 
 	"github.com/wyattanderson/pve-imds/internal/tapwatch"
+)
+
+var (
+	activeIfaces = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "pve_imds_manager_active_interfaces",
+		Help: "Number of tap interfaces with an active IMDS runtime.",
+	})
+	startedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pve_imds_manager_interfaces_started_total",
+		Help: "Total tap interface runtimes started.",
+	})
+	stoppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pve_imds_manager_interfaces_stopped_total",
+		Help: "Total tap interface runtimes stopped.",
+	})
 )
 
 // InterfaceRuntime is the per-interface worker.
@@ -82,6 +99,8 @@ func (m *Manager) startIface(parentCtx context.Context, ifindex int32, name stri
 	ctx, cancel := context.WithCancel(parentCtx)
 	mi := &managedIface{name: name, cancel: cancel, done: make(chan struct{})}
 	m.active[ifindex] = mi
+	activeIfaces.Inc()
+	startedTotal.Inc()
 	go func() {
 		defer close(mi.done)
 		if err := rt.Run(ctx); err != nil && ctx.Err() == nil {
@@ -98,6 +117,8 @@ func (m *Manager) stopIface(ifindex int32) {
 		return
 	}
 	delete(m.active, ifindex)
+	activeIfaces.Dec()
+	stoppedTotal.Inc()
 	mi.cancel()
 	<-mi.done
 	m.log.Info("stopped interface runtime", "ifindex", ifindex, "name", mi.name)
@@ -107,6 +128,8 @@ func (m *Manager) stopAll() {
 	for ifindex, mi := range m.active {
 		mi.cancel()
 		<-mi.done
+		activeIfaces.Dec()
+		stoppedTotal.Inc()
 		m.log.Info("stopped interface runtime", "ifindex", ifindex, "name", mi.name)
 	}
 	m.active = make(map[int32]*managedIface)

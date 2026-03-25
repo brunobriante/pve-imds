@@ -9,6 +9,7 @@ import (
 	"net/http/pprof"
 	"os"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
@@ -36,6 +37,7 @@ func newRootCmd() *cobra.Command {
 	var cfgFile string
 	var fxLogging bool
 	var pprofAddr string
+	var metricsAddr string
 	var emulate string
 
 	root := &cobra.Command{
@@ -45,7 +47,7 @@ func newRootCmd() *cobra.Command {
 			return initConfig(cfgFile)
 		},
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return runServe(fxLogging, pprofAddr)
+			return runServe(fxLogging, pprofAddr, metricsAddr)
 		},
 	}
 
@@ -53,14 +55,11 @@ func newRootCmd() *cobra.Command {
 	pf.StringVar(&cfgFile, "config", "", "config file (default: /etc/pve-imds/config.yaml)")
 	pf.BoolVar(&fxLogging, "fx-logging", false, "enable fx lifecycle logging")
 	pf.String("log-level", "info", "log level (debug, info, warn, error)")
-	pf.String("socket-path", "/run/pve-imds/meta.sock", "Unix socket path for metadata backend")
 	pf.StringVar(&pprofAddr, "pprof-addr", "", "address to serve pprof endpoints (e.g. localhost:6060); disabled if unset")
+	pf.StringVar(&metricsAddr, "metrics-addr", "", "address to serve Prometheus metrics (e.g. :9100); disabled if unset")
 	pf.StringVar(&emulate, "emulate", "openstack", "IMDS emulation target (openstack)")
 
 	if err := viper.BindPFlag("log_level", pf.Lookup("log-level")); err != nil {
-		panic(err)
-	}
-	if err := viper.BindPFlag("socket_path", pf.Lookup("socket-path")); err != nil {
 		panic(err)
 	}
 	if err := viper.BindPFlag("emulate", pf.Lookup("emulate")); err != nil {
@@ -77,7 +76,6 @@ func initConfig(cfgFile string) error {
 	// Set defaults from our config struct.
 	def := config.Default()
 	viper.SetDefault("log_level", def.LogLevel)
-	viper.SetDefault("socket_path", def.SocketPath)
 	viper.SetDefault("emulate", "ec2")
 
 	if cfgFile == "" {
@@ -88,7 +86,7 @@ func initConfig(cfgFile string) error {
 	return viper.ReadInConfig()
 }
 
-func runServe(fxLogging bool, pprofAddr string) error {
+func runServe(fxLogging bool, pprofAddr, metricsAddr string) error {
 	var cfg config.Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return fmt.Errorf("unmarshal config: %w", err)
@@ -111,10 +109,10 @@ func runServe(fxLogging bool, pprofAddr string) error {
 		fxLogger = fx.WithLogger(func() fxevent.Logger { return &fxevent.SlogLogger{Logger: logger} })
 	}
 
-	var pprofOpt fx.Option
+	var opts []fx.Option
 	if pprofAddr != "" {
 		addr := pprofAddr
-		pprofOpt = fx.Invoke(func(lc fx.Lifecycle) {
+		opts = append(opts, fx.Invoke(func(lc fx.Lifecycle) {
 			mux := http.NewServeMux()
 			mux.HandleFunc("/debug/pprof/", pprof.Index)
 			mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -136,9 +134,29 @@ func runServe(fxLogging bool, pprofAddr string) error {
 					return srv.Shutdown(ctx)
 				},
 			})
-		})
-	} else {
-		pprofOpt = fx.Options()
+		}))
+	}
+	if metricsAddr != "" {
+		addr := metricsAddr
+		opts = append(opts, fx.Invoke(func(lc fx.Lifecycle) {
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", promhttp.Handler())
+			srv := &http.Server{Addr: addr, Handler: mux}
+			lc.Append(fx.Hook{
+				OnStart: func(ctx context.Context) error {
+					lc := &net.ListenConfig{}
+					ln, err := lc.Listen(ctx, "tcp", addr)
+					if err != nil {
+						return fmt.Errorf("metrics listen %s: %w", addr, err)
+					}
+					go func() { _ = srv.Serve(ln) }()
+					return nil
+				},
+				OnStop: func(ctx context.Context) error {
+					return srv.Shutdown(ctx)
+				},
+			})
+		}))
 	}
 
 	app := fx.New(
@@ -158,7 +176,7 @@ func runServe(fxLogging bool, pprofAddr string) error {
 		fx.Invoke(manager.Register),
 		identity.Module,
 		fx.Invoke(tapwatch.Register),
-		pprofOpt,
+		fx.Options(opts...),
 	)
 
 	startCtx, startCancel := context.WithTimeout(context.Background(), app.StartTimeout())

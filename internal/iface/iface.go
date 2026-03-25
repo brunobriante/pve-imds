@@ -10,6 +10,9 @@ import (
 	"net"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -20,6 +23,24 @@ import (
 	"github.com/wyattanderson/pve-imds/internal/imds"
 	"github.com/wyattanderson/pve-imds/internal/manager"
 	"github.com/wyattanderson/pve-imds/internal/xdp"
+)
+
+var (
+	ifaceInFlight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pve_imds_http_in_flight_requests",
+		Help: "Number of HTTP requests currently being served, by interface.",
+	}, []string{"interface"})
+
+	ifaceDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "pve_imds_http_request_duration_seconds",
+		Help:    "HTTP request latency by interface and status code class.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"interface", "code"})
+
+	ifaceRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pve_imds_http_requests_total",
+		Help: "Total HTTP requests served, by interface and status code class.",
+	}, []string{"interface", "code"})
 )
 
 // Runtime is the per-interface worker. It sets up an AF_XDP socket, attaches
@@ -95,6 +116,18 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer listener.Close() //nolint:errcheck
 
 	log := r.log.With("iface", r.name)
-	handler := imds.LoggingMiddleware(log, r.server.NewHandler(r.resolver, r.name, r.ifindex))
+	labels := prometheus.Labels{"interface": r.name}
+	base := r.server.NewHandler(r.resolver, r.name, r.ifindex)
+	instrumented := promhttp.InstrumentHandlerInFlight(
+		ifaceInFlight.With(labels),
+		promhttp.InstrumentHandlerDuration(
+			ifaceDuration.MustCurryWith(labels),
+			promhttp.InstrumentHandlerCounter(
+				ifaceRequests.MustCurryWith(labels),
+				base,
+			),
+		),
+	)
+	handler := imds.LoggingMiddleware(log, instrumented)
 	return imds.Serve(ctx, listener, handler)
 }

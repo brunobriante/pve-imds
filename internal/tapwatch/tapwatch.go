@@ -12,8 +12,29 @@ import (
 	"regexp"
 
 	"github.com/mdlayher/netlink"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/fx"
 )
+
+var (
+	tapEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pve_imds_tapwatch_events_total",
+		Help: "Total tap interface lifecycle events emitted, by type.",
+	}, []string{"type"})
+
+	tapNetlinkTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "pve_imds_tapwatch_netlink_messages_total",
+		Help: "Total netlink messages received, by disposition.",
+	}, []string{"disposition"})
+)
+
+func eventTypeStr(t EventType) string {
+	if t == Created {
+		return "created"
+	}
+	return "deleted"
+}
 
 // tapIfaceRe matches Proxmox tap interface names: tap{vmid}i{netindex}.
 var tapIfaceRe = regexp.MustCompile(`^tap\d+i\d+$`)
@@ -102,6 +123,7 @@ func (w *Watcher) Scan(ctx context.Context, sink EventSink) error {
 		ev := Event{Type: Created, Name: iface.Name, Index: int32(iface.Index)}
 		w.log.DebugContext(ctx, "emitting startup event", "name", ev.Name, "index", ev.Index)
 		sink.HandleLinkEvent(ctx, ev)
+		tapEventsTotal.WithLabelValues("created").Inc()
 	}
 	return nil
 }
@@ -145,9 +167,12 @@ func (w *Watcher) Run(ctx context.Context, sink EventSink) error {
 		}
 		for _, msg := range msgs {
 			if ev, ok := w.process(msg); ok {
+				tapEventsTotal.WithLabelValues(eventTypeStr(ev.Type)).Inc()
+				tapNetlinkTotal.WithLabelValues("emitted").Inc()
 				w.log.DebugContext(ctx, "emitting event", "event", ev.Type, "name", ev.Name, "index", ev.Index)
 				sink.HandleLinkEvent(ctx, ev)
 			} else {
+				tapNetlinkTotal.WithLabelValues("skipped").Inc()
 				w.log.DebugContext(ctx, "skipping message", "type", msg.Header.Type)
 			}
 		}
