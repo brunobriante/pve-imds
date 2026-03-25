@@ -28,7 +28,7 @@ func LoggingMiddleware(log *slog.Logger, next http.Handler) http.Handler {
 		if r.URL.RawQuery != "" {
 			path += "?" + r.URL.RawQuery
 		}
-		log.Info("request",
+		log.Debug("request",
 			"method", r.Method,
 			"path", path,
 			"remote_addr", r.RemoteAddr,
