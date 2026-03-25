@@ -55,7 +55,7 @@ func newRootCmd() *cobra.Command {
 	pf.String("log-level", "info", "log level (debug, info, warn, error)")
 	pf.String("socket-path", "/run/pve-imds/meta.sock", "Unix socket path for metadata backend")
 	pf.StringVar(&pprofAddr, "pprof-addr", "", "address to serve pprof endpoints (e.g. localhost:6060); disabled if unset")
-	pf.StringVar(&emulate, "emulate", "ec2", "IMDS emulation target (ec2)")
+	pf.StringVar(&emulate, "emulate", "openstack", "IMDS emulation target (openstack)")
 
 	if err := viper.BindPFlag("log_level", pf.Lookup("log-level")); err != nil {
 		panic(err)
