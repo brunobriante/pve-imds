@@ -5,11 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/pprof"
 	"os"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.uber.org/fx"
@@ -111,52 +108,10 @@ func runServe(fxLogging bool, pprofAddr, metricsAddr string) error {
 
 	var opts []fx.Option
 	if pprofAddr != "" {
-		addr := pprofAddr
-		opts = append(opts, fx.Invoke(func(lc fx.Lifecycle) {
-			mux := http.NewServeMux()
-			mux.HandleFunc("/debug/pprof/", pprof.Index)
-			mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-			mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-			mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-			mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-			srv := &http.Server{Addr: addr, Handler: mux}
-			lc.Append(fx.Hook{
-				OnStart: func(ctx context.Context) error {
-					lc := &net.ListenConfig{}
-					ln, err := lc.Listen(ctx, "tcp", addr)
-					if err != nil {
-						return fmt.Errorf("pprof listen %s: %w", addr, err)
-					}
-					go func() { _ = srv.Serve(ln) }()
-					return nil
-				},
-				OnStop: func(ctx context.Context) error {
-					return srv.Shutdown(ctx)
-				},
-			})
-		}))
+		opts = append(opts, pprofOption(pprofAddr))
 	}
 	if metricsAddr != "" {
-		addr := metricsAddr
-		opts = append(opts, fx.Invoke(func(lc fx.Lifecycle) {
-			mux := http.NewServeMux()
-			mux.Handle("/metrics", promhttp.Handler())
-			srv := &http.Server{Addr: addr, Handler: mux}
-			lc.Append(fx.Hook{
-				OnStart: func(ctx context.Context) error {
-					lc := &net.ListenConfig{}
-					ln, err := lc.Listen(ctx, "tcp", addr)
-					if err != nil {
-						return fmt.Errorf("metrics listen %s: %w", addr, err)
-					}
-					go func() { _ = srv.Serve(ln) }()
-					return nil
-				},
-				OnStop: func(ctx context.Context) error {
-					return srv.Shutdown(ctx)
-				},
-			})
-		}))
+		opts = append(opts, metricsOption(metricsAddr))
 	}
 
 	app := fx.New(

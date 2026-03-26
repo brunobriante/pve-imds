@@ -1,4 +1,2 @@
-netlink-recorder
-pve-imds
 internal/xdp/*.o
 dist/

@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,19 +19,12 @@ import (
 type spyResolver struct {
 	mu               sync.Mutex
 	reloadConfigs    []int
-	reloadProcesses  []int
 	invalidatedVMIDs []int
 }
 
 func (s *spyResolver) ReloadConfig(vmid int) {
 	s.mu.Lock()
 	s.reloadConfigs = append(s.reloadConfigs, vmid)
-	s.mu.Unlock()
-}
-
-func (s *spyResolver) ReloadProcess(vmid int) {
-	s.mu.Lock()
-	s.reloadProcesses = append(s.reloadProcesses, vmid)
 	s.mu.Unlock()
 }
 
@@ -53,17 +45,6 @@ func (s *spyResolver) hasReloadConfig(vmid int) bool {
 	return false
 }
 
-func (s *spyResolver) hasReloadProcess(vmid int) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, v := range s.reloadProcesses {
-		if v == vmid {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *spyResolver) hasInvalidated(vmid int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -75,12 +56,12 @@ func (s *spyResolver) hasInvalidated(vmid int) bool {
 	return false
 }
 
-// startWatcher creates a FileWatcher watching the given temp dirs and starts
-// Run in a goroutine. Returns the watcher and a cancel func to stop it.
-func startWatcher(t *testing.T, spy *spyResolver, confDir, pidDir string) context.CancelFunc {
+// startWatcher creates a FileWatcher watching the given temp dir and starts
+// Run in a goroutine. Returns a cancel func to stop it.
+func startWatcher(t *testing.T, spy *spyResolver, confDir string) context.CancelFunc {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	fw, err := newFileWatcherWithDirs(spy, log, confDir, pidDir)
+	fw, err := newFileWatcherWithDirs(spy, log, confDir)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,9 +79,8 @@ const (
 // ReloadConfig with the correct VMID.
 func TestIntegrationConfWrite(t *testing.T) {
 	confDir := t.TempDir()
-	pidDir := t.TempDir()
 	spy := &spyResolver{}
-	startWatcher(t, spy, confDir, pidDir)
+	startWatcher(t, spy, confDir)
 
 	const vmid = 42
 	path := filepath.Join(confDir, fmt.Sprintf("%d.conf", vmid))
@@ -114,9 +94,8 @@ func TestIntegrationConfWrite(t *testing.T) {
 // invalidateByVMID with the correct VMID.
 func TestIntegrationConfDelete(t *testing.T) {
 	confDir := t.TempDir()
-	pidDir := t.TempDir()
 	spy := &spyResolver{}
-	startWatcher(t, spy, confDir, pidDir)
+	startWatcher(t, spy, confDir)
 
 	const vmid = 99
 	path := filepath.Join(confDir, fmt.Sprintf("%d.conf", vmid))
@@ -132,44 +111,3 @@ func TestIntegrationConfDelete(t *testing.T) {
 		eventTimeout, pollInterval, "invalidateByVMID(%d) not called after conf delete", vmid)
 }
 
-// TestIntegrationPIDCreate verifies that creating a .pid file triggers
-// ReloadProcess with the correct VMID (the PID-after-NEWLINK race path).
-func TestIntegrationPIDCreate(t *testing.T) {
-	confDir := t.TempDir()
-	pidDir := t.TempDir()
-	spy := &spyResolver{}
-	startWatcher(t, spy, confDir, pidDir)
-
-	const vmid = 200
-	path := filepath.Join(pidDir, fmt.Sprintf("%d.pid", vmid))
-	require.NoError(t, os.WriteFile(path, []byte("12345\n"), 0644))
-
-	require.Eventually(t, func() bool { return spy.hasReloadProcess(vmid) },
-		eventTimeout, pollInterval, "ReloadProcess(%d) not called after pid create", vmid)
-}
-
-// TestIntegrationPIDRemoveNoAction verifies that removing a .pid file does NOT
-// trigger any resolver call (tapwatch handles removal via DELLINK).
-func TestIntegrationPIDRemoveNoAction(t *testing.T) {
-	confDir := t.TempDir()
-	pidDir := t.TempDir()
-	spy := &spyResolver{}
-	startWatcher(t, spy, confDir, pidDir)
-
-	const vmid = 300
-	path := filepath.Join(pidDir, fmt.Sprintf("%d.pid", vmid))
-	require.NoError(t, os.WriteFile(path, []byte("54321\n"), 0644))
-
-	// Wait for the write/create event to settle.
-	require.Eventually(t, func() bool { return spy.hasReloadProcess(vmid) },
-		eventTimeout, pollInterval)
-
-	require.NoError(t, os.Remove(path))
-
-	// Give the watcher time to process any spurious events (including the
-	// debounce window) then assert no invalidation occurred.
-	time.Sleep(400 * time.Millisecond)
-	spy.mu.Lock()
-	assert.NotContains(t, spy.invalidatedVMIDs, vmid, "pid Remove must not trigger invalidation")
-	spy.mu.Unlock()
-}
