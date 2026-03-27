@@ -1,51 +1,44 @@
 # pve-imds
 
-An AWS IMDS-compatible metadata service for Proxmox VE virtual machines.
+An OpenStack and EC2 IMDS (Instance Metadata Service) compatible metadata service for virtual machines running in Proxmox.
 
-Virtual machines running on a Proxmox host can reach `http://169.254.169.254` to retrieve instance metadata and a signed instance identity document — the same endpoint pattern used by AWS EC2, allowing unmodified cloud-init configurations and tooling to work transparently.
+With `pve-imds`, an unmodified Linux [cloud image](https://cloud-images.ubuntu.com/) running [cloud-init](https://docs.cloud-init.io/en/latest/explanation/introduction.html) can reach `http://169.254.169.254` to retrieve not only instance metadata but also **custom [user data](https://docs.cloud-init.io/en/latest/explanation/format/index.html)** stored in the Proxmox VM *Notes* field. Eventually, `pve-imds` will also support a **signed identity document** that a VM can use to authenticate to a service like Vault.
+
+## Why not use the cloud-init support built-in to Proxmox?
+
+Custom user data affords an incredibly powerful way to provision machines with `cloud-init`. It is extensively customizable and is an industry-standard method for complete unattended provisioning of machines.
+
+Proxmox has [basic support for cloud-init](https://pve.proxmox.com/wiki/Cloud-Init_Support) that works by generating an ISO image and attaching it to the VM. Unfortunately, Proxmox only lets you configure custom user data if you provide it via a snippet file from a storage source that supports snippets. This adds complexity, especially around replication.
+
+With `pve-imds`, you can embed custom user data in the *Notes* field of a VM (inside a comment tag, so it isn't visible). This field is stored in the VM's replicated configuration file in `/etc/pve/qemu-server/<VMID>.conf`. Additionally, `pve-imds` serves all of the VM's metadata, **including VM tags** which can be fed into a config management tool like Ansible or Salt to specify things like machine roles or environments.
+
+### Instance identity documents and trust
+
+For me, these capabilites alone were valuable enough to develop `pve-imds`. However, I also wanted a pathway to something like the AWS EC2 [instance identity document](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-identity-documents.html), which provides an external mechanism for **cryptographically verifying instance metadata**. So, if you're using Proxmox tags to specify that a VM is a `mysql` server in the `prod` environment, that VM can *prove it* to another service that trusts a public key.
+
+## Why network-based configuration?
+
+The ISO image approach that Proxmox uses (and that I used before this by generating my own ISO images with my own user data) isn't dynamic. With this approach, metadata is up-to-date immediately. Change a tag? Add user data? Immediately visible in the instance without regenerating the image.
 
 ## How it works
 
-Proxmox attaches each VM's virtual NIC to a Linux tap interface (e.g., `tap100i0`). `pve-imds` watches for these interfaces via netlink, attaches an AF_XDP socket with an eBPF XDP program that intercepts TCP traffic destined for `169.254.169.254:80`, and presents a userspace HTTP server (via gvisor's netstack) on that address. Intercepted requests are enriched with VM-identifying headers and forwarded to a separate metadata backend over a Unix socket.
+I think the EC2 IMDS approach (now shared by other hypervisors and clouds) is extremely elegant. A VM can make a request to `http://169.254.169.254` and retrieve information about itself, like looking in a mirror. The VM doesn't even need a valid DHCP lease because `169.254.169.254` is a [link-local IP address](https://en.wikipedia.org/wiki/Link-local_address) and the packets (at least in the case of `pve-imds`) never leave the hypervisor.
 
-No changes to individual VM configurations are required.
+This does make the solution slightly more complicated. To provide a strong guarantee that a VM will be able to retrieve its identity *and only its identity*, the hypervisor must be able to intercept and directly respond to packets leaving the VM destined for `169.264.169.254`. Doing this at line rate speeds is challenging. In the cloud, hypervisors (I'm guessing) offload this interception to hardware like [AWS Nitro](https://aws.amazon.com/ec2/nitro/). In the case of `pve-imds`, we use XDP ([eXpress Data Path](https://en.wikipedia.org/wiki/Express_Data_Path)) to intercept packets as soon as they hit the VM's `tap` interface before they hit the rest of the kernel networking stack (or whatever, I'm not an expert). I've been able to maintain full line rate from a VM bridged to a 25GbE network with this approach.
 
-## Components
+XDP intercepts the full Ethernet frame, so we use the [gVisor userspace TCP stack](gvisor.dev/gvisor/pkg/tcpip/stack) to handle the path between the raw `AF_XDP` socket and the VM-specific HTTP handler. An in-memory metadata cache parses Proxmox VM configuration files for updates, refreshing as necessary via [fsnotify](https://github.com/fsnotify/fsnotify).
 
-| Binary | Description |
-|--------|-------------|
-| `pve-imds` | Main daemon. Watches for tap interfaces, manages XDP attachment, proxies requests to the metadata backend. Runs as a systemd service. |
-| `pve-imds-meta` _(planned)_ | Unprivileged metadata backend. Serves metadata and signed identity documents over a Unix socket. |
+## Known limitations
 
-## VM identification
+My goal with releasing this is to hopefully improve it with community feedback. I find it useful in my homelab. There is absolutely no warranty, express or implied, that it is suitable in its current or future form for any use case of any import. Use at your own risk.
 
-From the tap interface name, `pve-imds` derives a tuple forwarded as HTTP headers to the backend:
+I have only tested this with VMs running on Proxmox 9 using `virtio` interfaces (though I don't think the interface type matters). This *will not work* with VMs using SR-IOV, unless the VM has a secondary interface with a link-local address.
 
-| Header | Source |
-|--------|--------|
-| `X-PVE-Node` | hostname |
-| `X-PVE-VMID` | parsed from interface name (`tap{vmid}i{index}`) |
-| `X-PVE-Net-Index` | parsed from interface name |
-| `X-PVE-Config-Digest` | from `/etc/pve/qemu-server/{vmid}.conf` — detects config changes |
+## Future work
 
-## Requirements
+- instance identity documents
+- hardware offload using [ASAP2 direct](https://docs.nvidia.com/networking/display/mlnxofedv24103250lts/ovs+offload+using+asap%C2%B2+direct)
 
-- Proxmox VE host (Linux 5.9+ for AF_XDP support)
-- Root or `CAP_NET_ADMIN` / `CAP_BPF` capabilities
-- Go 1.24+ with CGO enabled
-- `clang` and Linux kernel headers for eBPF compilation
+### AI disclosure
 
-## Development
-
-```sh
-# Build all binaries
-go build ./cmd/...
-
-# Run tests
-go test ./...
-
-# Regenerate eBPF Go bindings (requires clang + bpf2go)
-go generate ./internal/xdp/...
-```
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for design details.
+I used Claude Code to author most of the code here, but by specifying exactly the architecture and approach that I personally designed as an experienced software and infrastructure engineer. I could have written all of this on my own (and I did for the prototype), but this approach saved me a fuckton of time and enabled me to do things like write conformance tests that test `pve-imds` against `cloud-init`.
