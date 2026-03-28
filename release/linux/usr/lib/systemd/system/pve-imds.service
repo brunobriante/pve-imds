@@ -1,21 +1,25 @@
 [Unit]
 Description=Proxmox VE AWS IMDS-compatible metadata service
 Documentation=https://github.com/wyattanderson/pve-imds
-Before=pveproxy.service pve-guests.service
-After=network.target
+Before=pveproxy.service
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=3
 
 [Service]
 Type=notify
+NotifyAccess=main
 ExecStart=/usr/sbin/pve-imds
-Restart=always
+Restart=on-failure
 RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+
+# TODO: Add WatchdogSec=30s once daemon implements periodic sd_notify(WATCHDOG=1) pings
 
 StandardOutput=journal
 StandardError=journal
-
-# TODO: Consider enabling the systemd watchdog (WatchdogSec=30s) to detect
-# freezes in the XDP redirect path or the proxy forwarding loop. Requires
-# the daemon to call sd_notify("WATCHDOG=1") at regular intervals.
 
 User=pve-imds
 Group=pve-imds
@@ -27,14 +31,29 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW
 
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=full
-ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/pve/qemu-server
 RuntimeDirectory=pve-imds
 RuntimeDirectoryMode=0750
 MemoryDenyWriteExecute=yes
+UMask=0027
+
+RestrictAddressFamilies=AF_XDP AF_NETLINK AF_UNIX AF_INET
+SystemCallFilter=@system-service @network-io bpf perf_event_open
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
 
 # TODO: if viable, use PrivateBPF= and BPFDelegate* restrictions to lock down
 # BPF capabilities once https://github.com/cilium/ebpf/issues/1921 is resolved
 
 [Install]
-WantedBy=pveproxy.service pve-guests.service
+WantedBy=multi-user.target

@@ -2,7 +2,7 @@
 
 ## Overview
 
-`pve-imds` intercepts HTTP requests from guest VMs to `169.254.169.254` and proxies them to an unprivileged metadata backend, adding VM identity information as request headers. Privilege separation keeps the high-privilege XDP layer minimal and allows the metadata backend to be replaced or extended independently.
+`pve-imds` intercepts HTTP requests from guest VMs to `169.254.169.254` and serves metadata responses in-process, injecting VM identity information into the request context before dispatching to the metadata handler.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -13,15 +13,8 @@
 │  │            │              │                           │  │
 │  │  GET /meta │              │  XDP: intercept 169.254.. │  │
 │  │  →169.254  │              │  gvisor netstack: HTTP    │  │
-│  └────────────┘              │  add identity headers     │  │
-│                              │         │                 │  │
-│                              └─────────┼─────────────────┘  │
-│                                        │ Unix socket        │
-│                              ┌─────────▼─────────────────┐  │
-│                              │  pve-imds-meta (unpriv.)  │  │
-│                              │                           │  │
-│                              │  serve metadata           │  │
-│                              │  sign identity documents  │  │
+│  └────────────┘              │  resolve VM identity      │  │
+│                              │  serve metadata response  │  │
 │                              └───────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -31,7 +24,7 @@
 1. Guest sends `GET http://169.254.169.254/...` → tap interface on host.
 2. eBPF XDP program attached to the tap interface checks: IPv4, TCP, dst=`169.254.169.254`, dport=80. Matching packets are redirected to an AF_XDP socket via `XSKMAP`; non-matching packets pass through normally.
 3. gvisor's userspace netstack receives frames from the AF_XDP socket and presents a standard `net.Listener` interface.
-4. An HTTP reverse proxy layer adds `X-PVE-*` identity headers and forwards the request to the metadata backend over a Unix socket.
+4. An in-process HTTP handler resolves the VM identity from the tap interface name and serves the metadata response directly.
 5. The response is returned through the same path.
 
 The XDP program runs in copy-mode (not zero-copy) for compatibility; zero-copy can be enabled where the driver supports it.
@@ -84,7 +77,7 @@ Created event  ──►  parse vmid + net_index from interface name
                         ▼
                     create AF_XDP socket
                     load & attach eBPF program
-                    register HTTP proxy handler
+                    register HTTP handler
 
 Deleted event  ──►  detach XDP, close socket, remove handler
 ```
@@ -108,7 +101,6 @@ pve-imds/
 ├── cmd/
 │   ├── pve-imds/               # Main daemon binary
 │   │   └── main.go
-│   ├── pve-imds-meta/          # Metadata backend binary (planned)
 │   └── netlink-recorder/       # Dev utility: capture RTNLGRP_LINK messages to file
 │       └── main.go
 ├── internal/
@@ -138,7 +130,7 @@ Binaries use [spf13/cobra](https://github.com/spf13/cobra) for subcommand struct
 Typical invocation:
 
 ```sh
-pve-imds --socket /run/pve-imds-meta.sock --log-level info
+pve-imds --log-level info
 ```
 
 Configuration is layered: config file < environment variables (`PVE_IMDS_*`) < CLI flags.
@@ -148,10 +140,9 @@ Configuration is layered: config file < environment variables (`PVE_IMDS_*`) < C
 - **Logging**: structured `slog` throughout, with tap interface name and VMID as common log fields.
 - **Metrics**: Prometheus metrics exposed on a configurable HTTP port. Key metrics include:
   - Active tap interfaces under management
-  - Requests proxied / errors by interface
+  - Requests served / errors by interface
   - XDP redirect counts (from eBPF map statistics)
   - Identity cache hit/miss ratio
-  - Backend unix socket latency histogram
 
 ## Testing strategy
 
@@ -163,11 +154,10 @@ The project targets a testing pyramid:
 | **Integration** | XDP socket attachment and packet forwarding tested with a `veth` pair and a minimal network namespace. Requires Linux with BPF support; suitable for CI on a capable kernel. |
 | **Smoke / E2E** | Full stack test against a real Proxmox host. Validates end-to-end: VM boots, queries IMDS, receives correct metadata. Run manually or in a dedicated environment. |
 
-Packages are designed for testability: interfaces are defined for the identity resolver, XDP manager, and backend client so they can be replaced with fakes in unit tests.
+Packages are designed for testability: interfaces are defined for the identity resolver and XDP manager so they can be replaced with fakes in unit tests.
 
 ## Security considerations
 
-- The main daemon runs with `CAP_NET_ADMIN` and `CAP_BPF` (or root) for XDP attachment. It should drop unnecessary capabilities after startup.
-- The metadata backend runs as an unprivileged user and is only reachable via Unix socket with appropriate ownership/permissions.
-- VM identity headers (`X-PVE-*`) must not be forwarded back to the guest.
+- The main daemon runs with `CAP_NET_ADMIN`, `CAP_BPF`, and `CAP_NET_RAW` for XDP attachment. It should drop unnecessary capabilities after startup.
+- VM identity headers (`X-PVE-*`) must not be sent to the guest in responses.
 - The eBPF program only redirects the exact `169.254.169.254:80` target; all other traffic passes through unmodified.

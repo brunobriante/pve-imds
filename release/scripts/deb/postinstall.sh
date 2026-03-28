@@ -1,4 +1,4 @@
 #!/bin/sh
 set -e
 systemctl daemon-reload
-systemctl enable pve-imds.service
+systemctl enable --now pve-imds.service

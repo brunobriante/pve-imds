@@ -37,8 +37,8 @@ I have only tested this with VMs running on Proxmox 9 using `virtio` interfaces 
 ## Future work
 
 - instance identity documents
-- hardware offload using [ASAP2 direct](https://docs.nvidia.com/networking/display/mlnxofedv24103250lts/ovs+offload+using+asap%C2%B2+direct)
+- hardware offload using [ASAP<sup>2</sup> direct](https://docs.nvidia.com/networking/display/mlnxofedv24103250lts/ovs+offload+using+asap%C2%B2+direct)
 
-### AI disclosure
+## AI disclosure
 
-I used Claude Code to author most of the code here, but by specifying exactly the architecture and approach that I personally designed as an experienced software and infrastructure engineer. I could have written all of this on my own (and I did for the prototype), but this approach saved me a fuckton of time and enabled me to do things like write conformance tests that test `pve-imds` against `cloud-init`.
+This was not vibe-coded. I used Claude Code to author most of the code here, but by specifying exactly the architecture and approach that I personally designed as an experienced software and infrastructure engineer, and with thorough review. I could have written all of this on my own (and I did for the prototype), but this approach saved me a fuckton of time and enabled me to do things like write conformance tests that test `pve-imds` against `cloud-init`.
