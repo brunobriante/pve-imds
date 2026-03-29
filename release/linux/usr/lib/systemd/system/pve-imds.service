@@ -28,6 +28,7 @@ DynamicUser=yes
 SupplementaryGroups=www-data
 AmbientCapabilities=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW
+LimitMEMLOCK=infinity
 
 NoNewPrivileges=yes
 PrivateTmp=yes
