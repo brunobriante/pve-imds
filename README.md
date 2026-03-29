@@ -48,6 +48,8 @@ cat << EOF > user-data
 package_update: true
 packages:
   - qemu-guest-agent
+runcmd:
+  - [ systemctl, enable, --now, --no-block, qemu-guest-agent.service ]
 ssh_authorized_keys:
   # replace this with your own SSH public key
   - ssh-ed25519 AAAAC3NzaC1lZ...
@@ -57,7 +59,7 @@ EOF
 qm clone <TEMPLATE VMID> $(pvesh get /cluster/nextid) --description "$(echo '<!--#user-data'; cat user-data; echo '-->')" --name "my-test-vm"
 ```
 
-5. Boot your new VM and try SSHing in.
+5. Boot your new VM, look for the IP as reported by `qemu-guest-agent`, and try SSHing in.
 
 ## Why not use the cloud-init support built-in to Proxmox?
 
