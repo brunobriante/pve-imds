@@ -1,9 +1,10 @@
 [Unit]
 Description=Proxmox VE IMDS server
 Documentation=https://github.com/wyattanderson/pve-imds
-Before=pveproxy.service
-After=network-online.target
+Before=pve-guests.service
+After=network-online.target pve-cluster.service
 Wants=network-online.target
+BindsTo=pve-cluster.service
 StartLimitIntervalSec=60s
 StartLimitBurst=3
 
