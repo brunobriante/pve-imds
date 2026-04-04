@@ -240,6 +240,78 @@ func TestReloadConfig(t *testing.T) {
 	assert.Equal(t, "updated", e.config.Name)
 }
 
+// TestPopulateBeforeConfigExists verifies the live-migration race: a tap
+// interface appears before the VM config file has been rsync'd to the host.
+// populate must register the interface as pending so that when the config file
+// later arrives and ReloadConfig is called, the cache entry is created.
+func TestPopulateBeforeConfigExists(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Tap interface comes up; config file does not exist yet.
+	env.resolver.HandleLinkEvent(context.Background(), tapwatch.Event{
+		Type:  tapwatch.Created,
+		Name:  vm100.ifname,
+		Index: vm100.ifindex,
+	})
+
+	// Entry must NOT be in the cache yet.
+	env.resolver.mu.RLock()
+	_, inCache := env.resolver.entries[vm100.ifname]
+	env.resolver.mu.RUnlock()
+	require.False(t, inCache, "cache entry must not exist before config file arrives")
+
+	// Config file arrives on disk (rsync'd from source host).
+	mac := env.addVM(t, vm100)
+
+	// File watcher fires ReloadConfig.
+	env.resolver.ReloadConfig(vm100.vmid)
+
+	// Entry must now be in the cache.
+	env.resolver.mu.RLock()
+	e, inCache := env.resolver.entries[vm100.ifname]
+	env.resolver.mu.RUnlock()
+	require.True(t, inCache, "cache entry must exist after ReloadConfig following config arrival")
+	assert.Equal(t, vm100.vmid, e.vmid)
+	assert.Equal(t, vm100.netIndex, e.netIndex)
+	assert.Equal(t, vm100.ifindex, e.ifindex)
+
+	// Full Lookup must also succeed.
+	rec, err := env.resolver.Lookup(vm100.ifname, vm100.ifindex, mac)
+	require.NoError(t, err)
+	assert.Equal(t, vm100.vmid, rec.VMID)
+}
+
+// TestPendingInterfaceDeletedBeforeConfig verifies that if the tap interface is
+// deleted before the config file arrives, the pending entry is cleaned up and
+// ReloadConfig does not insert a stale cache entry.
+func TestPendingInterfaceDeletedBeforeConfig(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Interface comes up with no config.
+	env.resolver.HandleLinkEvent(context.Background(), tapwatch.Event{
+		Type:  tapwatch.Created,
+		Name:  vm100.ifname,
+		Index: vm100.ifindex,
+	})
+
+	// Interface is deleted before config arrives (migration aborted, etc.).
+	env.resolver.HandleLinkEvent(context.Background(), tapwatch.Event{
+		Type:  tapwatch.Deleted,
+		Name:  vm100.ifname,
+		Index: vm100.ifindex,
+	})
+
+	// Config file arrives.
+	env.addVM(t, vm100)
+	env.resolver.ReloadConfig(vm100.vmid)
+
+	// No entry should exist — the interface is gone.
+	env.resolver.mu.RLock()
+	_, inCache := env.resolver.entries[vm100.ifname]
+	env.resolver.mu.RUnlock()
+	assert.False(t, inCache, "deleted pending interface must not be inserted by ReloadConfig")
+}
+
 // TestConcurrentLookupAndPopulate verifies there are no data races when
 // lookups and populates happen concurrently. Run with -race.
 func TestConcurrentLookupAndPopulate(t *testing.T) {

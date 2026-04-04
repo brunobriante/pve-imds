@@ -110,4 +110,3 @@ func TestIntegrationConfDelete(t *testing.T) {
 	require.Eventually(t, func() bool { return spy.hasInvalidated(vmid) },
 		eventTimeout, pollInterval, "invalidateByVMID(%d) not called after conf delete", vmid)
 }
-

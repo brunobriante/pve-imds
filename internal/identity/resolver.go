@@ -53,8 +53,9 @@ type Resolver struct {
 	node string
 
 	mu            sync.RWMutex
-	entries       map[string]*entry // key: ifname e.g. "tap100i0"
-	vmidToIfnames map[int][]string  // secondary index for config reloads
+	entries       map[string]*entry      // key: ifname e.g. "tap100i0"
+	vmidToIfnames map[int][]string       // secondary index for config reloads
+	pendingIfaces map[int][]pendingIface // interfaces waiting for their config file
 }
 
 // New returns a Resolver that reads VM config files from fs. It records the
@@ -70,6 +71,7 @@ func New(fs afero.Fs, log *slog.Logger) (*Resolver, error) {
 		node:          node,
 		entries:       make(map[string]*entry),
 		vmidToIfnames: make(map[int][]string),
+		pendingIfaces: make(map[int][]pendingIface),
 	}, nil
 }
 
@@ -120,28 +122,60 @@ func (r *Resolver) Lookup(ifname string, ifindex int32, srcMAC net.HardwareAddr)
 	}, nil
 }
 
-// ReloadConfig re-reads the config file for vmid and updates all cache entries
-// that share it. Called by the Stage 4 file watcher on IN_CLOSE_WRITE for a
-// .conf file. A parse failure leaves the existing cached config intact.
-func (r *Resolver) ReloadConfig(vmid int) {
+// readConfig reads and parses the VM config file for vmid.
+func (r *Resolver) readConfig(vmid int) (*vmconfig.VMConfig, error) {
 	raw, err := afero.ReadFile(r.fs, fmt.Sprintf("/etc/pve/qemu-server/%d.conf", vmid))
 	if err != nil {
-		r.log.Warn("identity: reload config: read failed", "vmid", vmid, "err", err)
-		return
+		return nil, err
 	}
-	cfg, err := vmconfig.ParseConfig(raw)
+	return vmconfig.ParseConfig(raw)
+}
+
+// insertLocked adds a fully-populated cache entry. Must be called with r.mu
+// held for writing.
+func (r *Resolver) insertLocked(vmid, netIndex int, ifname string, ifindex int32, cfg *vmconfig.VMConfig) {
+	r.entries[ifname] = &entry{
+		vmid:     vmid,
+		netIndex: netIndex,
+		ifindex:  ifindex,
+		config:   cfg,
+	}
+	cacheEntries.Inc()
+	r.addIfname(vmid, ifname)
+}
+
+// ReloadConfig re-reads the config file for vmid and updates all cache entries
+// that share it. It also promotes any pending interfaces (tap interfaces that
+// appeared before the config file existed) to full cache entries. Called by the
+// file watcher on Create/Write events for a .conf file. A parse failure leaves
+// the existing cached config and pending entries intact.
+func (r *Resolver) ReloadConfig(vmid int) {
+	cfg, err := r.readConfig(vmid)
 	if err != nil {
-		r.log.Warn("identity: reload config: parse failed", "vmid", vmid, "err", err)
+		r.log.Warn("identity: reload config: failed", "vmid", vmid, "err", err)
 		return
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Update existing cache entries.
 	for _, ifname := range r.vmidToIfnames[vmid] {
 		if e, ok := r.entries[ifname]; ok {
 			e.config = cfg
 		}
 	}
+
+	// Promote pending interfaces that were waiting for this config.
+	for _, p := range r.pendingIfaces[vmid] {
+		_, netIndex, err := parseIfname(p.ifname)
+		if err != nil {
+			continue // ifname was already validated in populate; shouldn't happen
+		}
+		r.log.Debug("identity: promoting pending interface", "ifname", p.ifname, "vmid", vmid)
+		r.insertLocked(vmid, netIndex, p.ifname, p.ifindex, cfg)
+	}
+	delete(r.pendingIfaces, vmid)
 }
 
 // HandleLinkEvent implements tapwatch.EventSink.
@@ -157,36 +191,46 @@ func (r *Resolver) HandleLinkEvent(ctx context.Context, ev tapwatch.Event) {
 }
 
 // populate reads the VM config for the given tap interface and inserts an entry
-// into the cache. It is safe to call concurrently.
+// into the cache. If the config file is not yet available (e.g., during live
+// migration), the interface is registered as pending so that a subsequent
+// ReloadConfig call can complete the entry when the file arrives. It is safe
+// to call concurrently.
 func (r *Resolver) populate(ctx context.Context, ifname string, ifindex int32) error {
 	vmid, netIndex, err := parseIfname(ifname)
 	if err != nil {
 		return err
 	}
 
-	raw, err := afero.ReadFile(r.fs, fmt.Sprintf("/etc/pve/qemu-server/%d.conf", vmid))
+	cfg, err := r.readConfig(vmid)
 	if err != nil {
+		// Config not yet available — register as pending.
+		r.log.DebugContext(ctx, "identity: config unavailable, registering as pending",
+			"ifname", ifname, "vmid", vmid)
+		r.mu.Lock()
+		r.registerPendingLocked(vmid, ifname, ifindex)
+		r.mu.Unlock()
 		return fmt.Errorf("read config: %w", err)
-	}
-	cfg, err := vmconfig.ParseConfig(raw)
-	if err != nil {
-		return fmt.Errorf("parse config: %w", err)
 	}
 
 	r.log.DebugContext(ctx, "identity: populating cache entry", "ifname", ifname, "vmid", vmid)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries[ifname] = &entry{
-		vmid:     vmid,
-		netIndex: netIndex,
-		ifindex:  ifindex,
-		config:   cfg,
-	}
-	cacheEntries.Inc()
-	r.addIfname(vmid, ifname)
-
+	r.insertLocked(vmid, netIndex, ifname, ifindex, cfg)
 	return nil
+}
+
+// registerPendingLocked records ifname/ifindex as pending for vmid, replacing
+// any existing pending entry for the same ifname (handles ifindex change on
+// interface recreation). Must be called with r.mu held for writing.
+func (r *Resolver) registerPendingLocked(vmid int, ifname string, ifindex int32) {
+	for i, p := range r.pendingIfaces[vmid] {
+		if p.ifname == ifname {
+			r.pendingIfaces[vmid][i].ifindex = ifindex
+			return
+		}
+	}
+	r.pendingIfaces[vmid] = append(r.pendingIfaces[vmid], pendingIface{ifname, ifindex})
 }
 
 // RecordByName returns the cached VMRecord for ifname, verifying that the
@@ -214,22 +258,36 @@ func (r *Resolver) RecordByName(ifname string, ifindex int32) (*VMRecord, error)
 	}, nil
 }
 
-// invalidate removes the cache entry for ifname, if present.
+// invalidate removes the cache entry for ifname, if present. It also removes
+// any pending entry for the same ifname so that a subsequent ReloadConfig does
+// not resurrect a deleted interface.
 func (r *Resolver) invalidate(ifname string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	e, ok := r.entries[ifname]
-	if !ok {
+
+	if e, ok := r.entries[ifname]; ok {
+		r.log.Debug("identity: evicting cache entry", "ifname", ifname, "vmid", e.vmid)
+		delete(r.entries, ifname)
+		cacheEntries.Dec()
+		r.removeIfname(e.vmid, ifname)
+	}
+
+	// Also remove from pending (interface deleted before config arrived).
+	vmid, _, err := parseIfname(ifname)
+	if err != nil {
 		return
 	}
-	r.log.Debug("identity: evicting cache entry", "ifname", ifname, "vmid", e.vmid)
-	delete(r.entries, ifname)
-	cacheEntries.Dec()
-	r.removeIfname(e.vmid, ifname)
+	r.pendingIfaces[vmid] = slices.DeleteFunc(r.pendingIfaces[vmid], func(p pendingIface) bool {
+		return p.ifname == ifname
+	})
+	if len(r.pendingIfaces[vmid]) == 0 {
+		delete(r.pendingIfaces, vmid)
+	}
 }
 
-// invalidateByVMID evicts all cache entries for vmid. Called by the file
-// watcher when a config file is removed (VM deleted or decommissioned).
+// invalidateByVMID evicts all cache entries for vmid and discards any pending
+// interfaces. Called by the file watcher when a config file is removed (VM
+// deleted or decommissioned).
 func (r *Resolver) invalidateByVMID(vmid int) {
 	r.mu.RLock()
 	ifnames := slices.Clone(r.vmidToIfnames[vmid])
@@ -237,6 +295,9 @@ func (r *Resolver) invalidateByVMID(vmid int) {
 	for _, ifname := range ifnames {
 		r.invalidate(ifname)
 	}
+	r.mu.Lock()
+	delete(r.pendingIfaces, vmid)
+	r.mu.Unlock()
 }
 
 // parseIfname extracts vmid and netIndex from a tap interface name of the form

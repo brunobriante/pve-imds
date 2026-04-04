@@ -6,6 +6,14 @@ import (
 	"github.com/wyattanderson/pve-imds/internal/vmconfig"
 )
 
+// pendingIface tracks a tap interface that arrived before its VM config file
+// was available. It is promoted to a full cache entry by ReloadConfig when
+// the config file later appears on disk.
+type pendingIface struct {
+	ifname  string
+	ifindex int32
+}
+
 // entry is a single cached VM identity record.
 type entry struct {
 	vmid     int
