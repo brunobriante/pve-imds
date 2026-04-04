@@ -209,7 +209,7 @@ func (r *Resolver) populate(ctx context.Context, ifname string, ifindex int32) e
 		r.mu.Lock()
 		r.registerPendingLocked(vmid, ifname, ifindex)
 		r.mu.Unlock()
-		return fmt.Errorf("read config: %w", err)
+		return nil
 	}
 
 	r.log.DebugContext(ctx, "identity: populating cache entry", "ifname", ifname, "vmid", vmid)
