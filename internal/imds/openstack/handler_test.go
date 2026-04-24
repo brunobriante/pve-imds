@@ -313,6 +313,342 @@ func TestNetworkDataServicesEmpty(t *testing.T) {
 	assert.Empty(t, nd.Services)
 }
 
+func TestNetworkDataStaticIPv4(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 2
+  ethernets:
+    net0:
+      addresses:
+        - 10.0.0.5/24
+      routes:
+        - to: 0.0.0.0/0
+          via: 10.0.0.1
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	require.Len(t, nd.Networks, 2)
+	assert.Equal(t, "ipv4", nd.Networks[0].Type)
+	assert.Equal(t, "10.0.0.5", nd.Networks[0].IPAddress)
+	assert.Equal(t, "255.255.255.0", nd.Networks[0].Netmask)
+	require.Len(t, nd.Networks[0].Routes, 1)
+	assert.Equal(t, "0.0.0.0", nd.Networks[0].Routes[0].Network)
+	assert.Equal(t, "0.0.0.0", nd.Networks[0].Routes[0].Netmask)
+	assert.Equal(t, "10.0.0.1", nd.Networks[0].Routes[0].Gateway)
+	assert.Equal(t, "ipv4_dhcp", nd.Networks[1].Type, "net1 not mentioned, must fall back to DHCP")
+}
+
+func TestNetworkDataIPv6SLAAC(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 2
+  ethernets:
+    net1:
+      accept-ra: true
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	assert.Equal(t, "ipv4_dhcp", nd.Networks[0].Type, "net0 not mentioned, must stay DHCP")
+	assert.Equal(t, "ipv6_slaac", nd.Networks[1].Type)
+}
+
+func TestNetworkDataServicesDNS(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 2
+  ethernets:
+    net0:
+      dhcp4: true
+      nameservers:
+        addresses:
+          - 8.8.8.8
+          - 2001:4860:4860::8888
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	require.Len(t, nd.Services, 2)
+	assert.Equal(t, "dns", nd.Services[0].Type)
+	assert.Equal(t, "8.8.8.8", nd.Services[0].Address)
+	assert.Equal(t, "dns", nd.Services[1].Type)
+	assert.Equal(t, "2001:4860:4860::8888", nd.Services[1].Address)
+}
+
+func TestNetworkDataDualStack(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 2
+  ethernets:
+    net0:
+      addresses:
+        - 192.168.1.10/24
+        - 2001:db8::10/64
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	assert.Equal(t, "ipv4", nd.Networks[0].Type)
+	assert.Equal(t, "192.168.1.10", nd.Networks[0].IPAddress)
+	assert.Equal(t, "255.255.255.0", nd.Networks[0].Netmask)
+	assert.Equal(t, "ipv6", nd.Networks[1].Type)
+	assert.Equal(t, "2001:db8::10", nd.Networks[1].IPAddress)
+	assert.Equal(t, "ffff:ffff:ffff:ffff::", nd.Networks[1].Netmask)
+}
+
+func TestNetworkDataInvalidConfigFallsBackToDHCP(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = "<!--#network-config\n: [invalid: yaml: {{{\n-->"
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	for _, network := range nd.Networks {
+		assert.Equal(t, "ipv4_dhcp", network.Type, "invalid YAML must fall back to DHCP")
+	}
+}
+
+func TestNetworkDataLinksUnchangedWithUserConfig(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 2
+  ethernets:
+    net0:
+      addresses:
+        - 10.0.0.5/24
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	require.Len(t, nd.Links, 2)
+	assert.Equal(t, "phy", nd.Links[0].Type, "links must always be auto-generated")
+	assert.Equal(t, "52:54:00:12:34:56", nd.Links[0].EthernetMACAddress)
+	assert.Equal(t, "phy", nd.Links[1].Type)
+	assert.Equal(t, "52:54:00:ab:cd:ef", nd.Links[1].EthernetMACAddress)
+}
+
+// ---------------------------------------------------------------------------
+// network_data.json - v1 format
+// ---------------------------------------------------------------------------
+
+func TestNetworkDataV1StaticIPv4(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 1
+  config:
+    - type: physical
+      name: net0
+      subnets:
+        - type: static
+          address: 10.0.0.5/24
+          gateway: 10.0.0.1
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	require.Len(t, nd.Networks, 2)
+	assert.Equal(t, "ipv4", nd.Networks[0].Type)
+	assert.Equal(t, "10.0.0.5", nd.Networks[0].IPAddress)
+	assert.Equal(t, "255.255.255.0", nd.Networks[0].Netmask)
+	require.Len(t, nd.Networks[0].Routes, 1)
+	assert.Equal(t, "10.0.0.1", nd.Networks[0].Routes[0].Gateway)
+	assert.Equal(t, "ipv4_dhcp", nd.Networks[1].Type)
+}
+
+func TestNetworkDataV1DHCP(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 1
+  config:
+    - type: physical
+      name: net0
+      subnets:
+        - type: dhcp
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	assert.Equal(t, "ipv4_dhcp", nd.Networks[0].Type)
+	assert.Equal(t, "ipv4_dhcp", nd.Networks[1].Type, "net1 not mentioned, falls back to DHCP")
+}
+
+func TestNetworkDataV1Nameservers(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 1
+  config:
+    - type: physical
+      name: net0
+      subnets:
+        - type: dhcp
+    - type: nameserver
+      address:
+        - 8.8.8.8
+        - 1.1.1.1
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	require.Len(t, nd.Services, 2)
+	assert.Equal(t, "dns", nd.Services[0].Type)
+	assert.Equal(t, "8.8.8.8", nd.Services[0].Address)
+	assert.Equal(t, "dns", nd.Services[1].Type)
+	assert.Equal(t, "1.1.1.1", nd.Services[1].Address)
+}
+
+func TestNetworkDataV1SLAAC(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 1
+  config:
+    - type: physical
+      name: net1
+      subnets:
+        - type: ipv6_slaac
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	assert.Equal(t, "ipv4_dhcp", nd.Networks[0].Type)
+	assert.Equal(t, "ipv6_slaac", nd.Networks[1].Type)
+}
+
+func TestNetworkDataV1StaticWithRoutes(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 1
+  config:
+    - type: physical
+      name: net0
+      subnets:
+        - type: static
+          address: 10.184.225.122
+          netmask: 255.255.255.252
+          routes:
+            - gateway: 10.184.225.121
+              netmask: 255.240.0.0
+              destination: 10.176.0.0
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	assert.Equal(t, "ipv4", nd.Networks[0].Type)
+	assert.Equal(t, "10.184.225.122", nd.Networks[0].IPAddress)
+	assert.Equal(t, "255.255.255.252", nd.Networks[0].Netmask)
+	require.Len(t, nd.Networks[0].Routes, 1)
+	assert.Equal(t, "10.176.0.0", nd.Networks[0].Routes[0].Network)
+	assert.Equal(t, "255.240.0.0", nd.Networks[0].Routes[0].Netmask)
+	assert.Equal(t, "10.184.225.121", nd.Networks[0].Routes[0].Gateway)
+}
+
+func TestNetworkDataV1MatchByMAC(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 1
+  config:
+    - type: physical
+      name: ens18
+      mac_address: '52:54:00:12:34:56'
+      subnets:
+        - type: static
+          address: 192.168.3.234
+          netmask: 255.255.253.0
+          gateway: 192.168.2.1
+    - type: nameserver
+      address:
+        - 192.168.3.24
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	require.Len(t, nd.Networks, 2)
+	assert.Equal(t, "ipv4", nd.Networks[0].Type)
+	assert.Equal(t, "192.168.3.234", nd.Networks[0].IPAddress)
+	assert.Equal(t, "255.255.253.0", nd.Networks[0].Netmask)
+	require.Len(t, nd.Networks[0].Routes, 1)
+	assert.Equal(t, "192.168.2.1", nd.Networks[0].Routes[0].Gateway)
+	assert.Equal(t, "ipv4_dhcp", nd.Networks[1].Type, "net1 not mentioned, must fall back to DHCP")
+	require.Len(t, nd.Services, 1)
+	assert.Equal(t, "192.168.3.24", nd.Services[0].Address)
+}
+
+func TestNetworkDataV2MatchByMAC(t *testing.T) {
+	rec := testRecord()
+	rec.Config.Description = `<!--#network-config
+network:
+  version: 2
+  ethernets:
+    ens18:
+      match:
+        macaddress: "52:54:00:12:34:56"
+      addresses:
+        - 192.168.3.234/23
+      routes:
+        - to: 0.0.0.0/0
+          via: 192.168.2.1
+-->`
+	resp := get(t, rec, "/openstack/latest/network_data.json")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var nd NetworkData
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&nd))
+
+	require.Len(t, nd.Networks, 2)
+	assert.Equal(t, "ipv4", nd.Networks[0].Type)
+	assert.Equal(t, "192.168.3.234", nd.Networks[0].IPAddress)
+	assert.Equal(t, "255.255.254.0", nd.Networks[0].Netmask)
+	require.Len(t, nd.Networks[0].Routes, 1)
+	assert.Equal(t, "192.168.2.1", nd.Networks[0].Routes[0].Gateway)
+	assert.Equal(t, "ipv4_dhcp", nd.Networks[1].Type, "net1 not mentioned, must fall back to DHCP")
+}
+
 // ---------------------------------------------------------------------------
 // user_data
 // ---------------------------------------------------------------------------

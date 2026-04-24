@@ -71,12 +71,13 @@ type Link struct {
 
 // Network describes the IP configuration for a link. We default to DHCPv4
 // since Proxmox does not record static IP assignments in the VM config.
+// Users can override via the <!--#network-config marker.
 type Network struct {
 	// ID is a unique identifier for this network entry.
 	ID string `json:"id"`
 
-	// Type controls how cloud-init configures the interface. "ipv4_dhcp" is
-	// the appropriate default when static IP information is unavailable.
+	// Type controls how cloud-init configures the interface. Common values:
+	// "ipv4_dhcp", "ipv6_dhcp", "ipv6_slaac", "ipv4", "ipv6".
 	Type string `json:"type"`
 
 	// Link references the Link.ID that this network applies to.
@@ -85,6 +86,22 @@ type Network struct {
 	// NetworkID is an opaque identifier for the logical network. We synthesise
 	// one from the Proxmox bridge name when available.
 	NetworkID string `json:"network_id,omitempty"`
+
+	// IPAddress is the static IP address for "ipv4" or "ipv6" type networks.
+	IPAddress string `json:"ip_address,omitempty"`
+
+	// Netmask is the subnet mask for "ipv4" or "ipv6" type networks.
+	Netmask string `json:"netmask,omitempty"`
+
+	// Routes is the list of static routes for this network.
+	Routes []Route `json:"routes,omitempty"`
+}
+
+// Route describes a static route within a Network entry.
+type Route struct {
+	Network string `json:"network"`
+	Netmask string `json:"netmask"`
+	Gateway string `json:"gateway"`
 }
 
 // Service describes a non-IP network service such as a DNS resolver. We emit
@@ -127,6 +144,8 @@ func MetadataFromRecord(rec *identity.VMRecord) MetaData {
 // order (net0, net1, …). cloud-init matches each link to a guest interface by
 // MAC address and configures it for DHCP.
 func networkDataFromRecord(rec *identity.VMRecord) NetworkData {
+	cfg := parseNetworkConfig(rec.Config.Description)
+
 	// Sort indices for deterministic output.
 	indices := make([]int, 0, len(rec.Config.Networks))
 	for idx := range rec.Config.Networks {
@@ -135,9 +154,10 @@ func networkDataFromRecord(rec *identity.VMRecord) NetworkData {
 	sort.Ints(indices)
 
 	links := make([]Link, 0, len(indices))
-	networks := make([]Network, 0, len(indices))
+	networks := make([]Network, 0, len(indices)*2)
+	netIdx := 0
 
-	for n, idx := range indices {
+	for _, idx := range indices {
 		nic := rec.Config.Networks[idx]
 		linkID := fmt.Sprintf("net%d", idx)
 
@@ -146,28 +166,35 @@ func networkDataFromRecord(rec *identity.VMRecord) NetworkData {
 		// Omit from the document so cloud-init uses the system default.
 		mtu = max(mtu, 0)
 
-		networkID := ""
-		if nic.Bridge != "" {
-			networkID = fmt.Sprintf("pve-%s-%d", nic.Bridge, idx)
-		}
-
 		links = append(links, Link{
 			ID:                 linkID,
 			Type:               "phy",
 			EthernetMACAddress: nic.MAC.String(),
 			MTU:                mtu,
 		})
-		networks = append(networks, Network{
-			ID:        fmt.Sprintf("network%d", n),
-			Type:      "ipv4_dhcp",
-			Link:      linkID,
-			NetworkID: networkID,
-		})
+
+		parsed := cfg.nicForMAC(nic.MAC.String())
+		if parsed == nil {
+			parsed = cfg.nicForName(linkID)
+		}
+		nicNets, nextIdx := buildNetworks(parsed, linkID, netIdx)
+		for i := range nicNets {
+			if nic.Bridge != "" {
+				nicNets[i].NetworkID = fmt.Sprintf("pve-%s-%d", nic.Bridge, netIdx+i)
+			}
+		}
+		networks = append(networks, nicNets...)
+		netIdx = nextIdx
+	}
+
+	services := cfg.dnsServices()
+	if services == nil {
+		services = []Service{}
 	}
 
 	return NetworkData{
 		Links:    links,
 		Networks: networks,
-		Services: []Service{},
+		Services: services,
 	}
 }
