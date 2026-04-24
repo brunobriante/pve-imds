@@ -58,3 +58,85 @@ func TestParseUserData_EmptyDescription(t *testing.T) {
 	_, ok := ParseUserData("")
 	assert.False(t, ok)
 }
+
+// ---------------------------------------------------------------------------
+// ParseNetworkConfig
+// ---------------------------------------------------------------------------
+
+func TestParseNetworkConfig_Basic(t *testing.T) {
+	desc := "<!--#network-config\nnet0:\n  type: ipv4\n  ip_address: 10.0.0.5\n-->\nother text"
+	got, ok := ParseNetworkConfig(desc)
+	require.True(t, ok)
+	assert.Equal(t, "net0:\n  type: ipv4\n  ip_address: 10.0.0.5", got)
+}
+
+func TestParseNetworkConfig_NoMarker(t *testing.T) {
+	_, ok := ParseNetworkConfig("just a plain description")
+	assert.False(t, ok)
+}
+
+func TestParseNetworkConfig_NoClosingTag(t *testing.T) {
+	_, ok := ParseNetworkConfig("<!--#network-config\nnet0:\n  type: ipv4\n")
+	assert.False(t, ok)
+}
+
+func TestParseNetworkConfig_EmptyContent(t *testing.T) {
+	_, ok := ParseNetworkConfig("<!--#network-config\n   \n-->")
+	assert.False(t, ok)
+}
+
+func TestParseNetworkConfig_WhitespaceStripped(t *testing.T) {
+	desc := "<!--#network-config\n\n  net0:\n    type: ipv4\n\n-->"
+	got, ok := ParseNetworkConfig(desc)
+	require.True(t, ok)
+	assert.Equal(t, "net0:\n    type: ipv4", got)
+}
+
+func TestParseNetworkConfig_ContentContainsClosingTag(t *testing.T) {
+	desc := "<!--#network-config\nnet0:\n  # comment --> still config\n  type: ipv4\n-->\nignored"
+	got, ok := ParseNetworkConfig(desc)
+	require.True(t, ok)
+	assert.Equal(t, "net0:\n  # comment --> still config\n  type: ipv4", got)
+}
+
+func TestParseNetworkConfig_TextBeforeMarker(t *testing.T) {
+	desc := "human-readable summary\n\n<!--#network-config\nnet0:\n  type: dhcp\n-->"
+	got, ok := ParseNetworkConfig(desc)
+	require.True(t, ok)
+	assert.Equal(t, "net0:\n  type: dhcp", got)
+}
+
+func TestParseNetworkConfig_EmptyDescription(t *testing.T) {
+	_, ok := ParseNetworkConfig("")
+	assert.False(t, ok)
+}
+
+func TestParseNetworkConfig_CoexistsWithUserData_NetworkFirst(t *testing.T) {
+	desc := "<!--#network-config\nnet0:\n  type: ipv4\n-->\n<!--#user-data\n#cloud-config\n-->"
+	ud, ok := ParseUserData(desc)
+	require.True(t, ok)
+	assert.Equal(t, "#cloud-config", ud)
+	nc, ok := ParseNetworkConfig(desc)
+	require.True(t, ok)
+	assert.Equal(t, "net0:\n  type: ipv4", nc)
+}
+
+func TestParseNetworkConfig_CoexistsWithUserData_UserDataFirst(t *testing.T) {
+	desc := "<!--#user-data\n#cloud-config\n-->\n<!--#network-config\nnet0:\n  type: ipv6_slaac\n-->"
+	ud, ok := ParseUserData(desc)
+	require.True(t, ok)
+	assert.Equal(t, "#cloud-config", ud)
+	nc, ok := ParseNetworkConfig(desc)
+	require.True(t, ok)
+	assert.Equal(t, "net0:\n  type: ipv6_slaac", nc)
+}
+
+func TestParseUserData_ContainsClosingTag_CoexistsWithNetworkConfig(t *testing.T) {
+	desc := "<!--#user-data\n# comment --> still user-data\nruncmd: []\n-->\n<!--#network-config\nnet0:\n  type: ipv4\n-->"
+	ud, ok := ParseUserData(desc)
+	require.True(t, ok)
+	assert.Equal(t, "# comment --> still user-data\nruncmd: []", ud)
+	nc, ok := ParseNetworkConfig(desc)
+	require.True(t, ok)
+	assert.Equal(t, "net0:\n  type: ipv4", nc)
+}

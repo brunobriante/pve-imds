@@ -18,6 +18,7 @@ require (
 	go.uber.org/fx v1.24.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.43.0
+	gopkg.in/yaml.v3 v3.0.1
 	gvisor.dev/gvisor v0.0.0-20250709194456-2a7b29d5230c
 )
 
@@ -50,5 +51,4 @@ require (
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -158,6 +158,30 @@ class TestOpenStackConformance:
             f"Expected MAC {mac!r} somewhere in network_config:\n{net_cfg}"
         )
 
+    def test_network_config_static_ip(self, ds):
+        """network_json network entries must each have type and link fields."""
+        ds._get_data()
+        from cloudinit.sources import UNSET
+
+        assert ds.network_json is not UNSET
+        for net in ds.network_json.get("networks", []):
+            assert "type" in net, f"network entry missing 'type': {net!r}"
+            assert "link" in net, f"network entry missing 'link': {net!r}"
+
+    def test_network_config_routes(self, ds):
+        """route entries in network_json must each have a gateway field."""
+        ds._get_data()
+        for net in ds.network_json.get("networks", []):
+            for route in net.get("routes", []):
+                assert "gateway" in route, f"route missing 'gateway': {route!r}"
+
+    def test_network_config_services(self, ds):
+        """service entries in network_json must each have type and address fields."""
+        ds._get_data()
+        for svc in ds.network_json.get("services", []):
+            assert "type" in svc, f"service missing 'type': {svc!r}"
+            assert "address" in svc, f"service missing 'address': {svc!r}"
+
     # ------------------------------------------------------------------
     # get_instance_id() convenience method
     # ------------------------------------------------------------------
