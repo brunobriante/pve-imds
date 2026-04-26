@@ -22,6 +22,13 @@ type JWTSVIDConfig struct {
 	TrustDomain string `mapstructure:"trust_domain"`
 }
 
+// VendorDataConfig points to a vendor-data payload and optionally restricts it
+// to VMs carrying all listed Proxmox tags.
+type VendorDataConfig struct {
+	File string   `mapstructure:"file"`
+	Tags []string `mapstructure:"tags"`
+}
+
 // Config holds all pve-imds configuration.
 type Config struct {
 	// LogLevel is the minimum log level to emit (debug, info, warn, error).
@@ -36,6 +43,8 @@ type Config struct {
 	MetricsAddr string `mapstructure:"metrics_addr"`
 	// JWTSVID holds configuration for JWT-SVID issuance and JWKS serving.
 	JWTSVID JWTSVIDConfig `mapstructure:"jwtsvid"`
+	// VendorData lists vendor-data payloads in first-match order.
+	VendorData []VendorDataConfig `mapstructure:"vendor_data"`
 }
 
 // Default returns a Config with sensible defaults.

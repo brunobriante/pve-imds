@@ -95,7 +95,7 @@ func runServe() error {
 	case "ec2":
 		imdsServer = ec2.NewServer()
 	case "openstack":
-		imdsServer = openstack.NewServer()
+		imdsServer = openstack.NewServerWithVendorData(cfg.VendorData)
 	default:
 		return fmt.Errorf("unsupported --emulate value %q (supported: ec2, openstack)", cfg.Emulate)
 	}

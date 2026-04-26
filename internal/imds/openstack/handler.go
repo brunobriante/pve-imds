@@ -23,8 +23,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
+	"github.com/wyattanderson/pve-imds/internal/config"
 	"github.com/wyattanderson/pve-imds/internal/identity"
 	"github.com/wyattanderson/pve-imds/internal/imds"
 )
@@ -35,12 +37,20 @@ const versionListing = "latest\n"
 // cloud-init does not require this listing, but it is useful for debugging.
 const fileListing = "meta_data.json\nnetwork_data.json\nuser_data\nvendor_data.json\nvendor_data2.json\n"
 
-type server struct{}
+type server struct {
+	vendorData []config.VendorDataConfig
+}
 
 // NewServer returns an [imds.Server] that serves OpenStack Nova-compatible
 // IMDS responses.
 func NewServer() imds.Server {
-	return &server{}
+	return NewServerWithVendorData(nil)
+}
+
+// NewServerWithVendorData returns an OpenStack IMDS server with configured
+// vendor-data payloads.
+func NewServerWithVendorData(vendorData []config.VendorDataConfig) imds.Server {
+	return &server{vendorData: vendorData}
 }
 
 // NewHandler implements [imds.Server]. It returns an http.Handler that routes
@@ -90,13 +100,13 @@ func (s *server) NewHandler(resolver imds.Resolver, name string, ifindex int32) 
 
 		case 3:
 			// GET /openstack/{version}/{file}
-			serveFile(w, req, rec, parts[2])
+			serveFile(w, req, rec, parts[2], s.vendorData)
 		}
 	})
 }
 
 // serveFile dispatches a /openstack/{version}/{file} request.
-func serveFile(w http.ResponseWriter, req *http.Request, rec *identity.VMRecord, file string) {
+func serveFile(w http.ResponseWriter, req *http.Request, rec *identity.VMRecord, file string, vendorData []config.VendorDataConfig) {
 	switch file {
 	case "meta_data.json":
 		serveJSON(w, MetadataFromRecord(rec))
@@ -114,12 +124,60 @@ func serveFile(w http.ResponseWriter, req *http.Request, rec *identity.VMRecord,
 		fmt.Fprint(w, userData) //nolint:errcheck
 
 	case "vendor_data.json", "vendor_data2.json":
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, "{}\n") //nolint:errcheck
+		serveVendorData(w, vendorData, rec.Config.Tags)
 
 	default:
 		http.NotFound(w, req)
 	}
+}
+
+func serveVendorData(w http.ResponseWriter, entries []config.VendorDataConfig, vmTags []string) {
+	path, ok := matchVendorData(entries, vmTags)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{}\n") //nolint:errcheck
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, "failed to read vendor-data", http.StatusInternalServerError)
+		return
+	}
+	if !json.Valid(data) {
+		data, err = json.Marshal(string(data))
+		if err != nil {
+			http.Error(w, "failed to encode vendor-data", http.StatusInternalServerError)
+			return
+		}
+		data = append(data, '\n')
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data) //nolint:errcheck
+}
+
+func matchVendorData(entries []config.VendorDataConfig, vmTags []string) (string, bool) {
+	tags := make(map[string]struct{}, len(vmTags))
+	for _, tag := range vmTags {
+		tags[tag] = struct{}{}
+	}
+
+	for _, entry := range entries {
+		if entry.File == "" {
+			continue
+		}
+		matched := true
+		for _, tag := range entry.Tags {
+			if _, ok := tags[tag]; !ok {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return entry.File, true
+		}
+	}
+	return "", false
 }
 
 // serveJSON marshals v to JSON and writes it to w with an application/json
