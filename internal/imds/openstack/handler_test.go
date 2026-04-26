@@ -7,12 +7,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wyattanderson/pve-imds/internal/config"
 	"github.com/wyattanderson/pve-imds/internal/identity"
 	"github.com/wyattanderson/pve-imds/internal/vmconfig"
 )
@@ -72,6 +75,16 @@ func get(t *testing.T, rec *identity.VMRecord, path string) *http.Response {
 	t.Helper()
 	resolver := &fakeResolver{rec: rec}
 	handler := NewServer().NewHandler(resolver, "tap100i0", 3)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w.Result()
+}
+
+func getWithVendorData(t *testing.T, rec *identity.VMRecord, path string, vendorData []config.VendorDataConfig) *http.Response {
+	t.Helper()
+	resolver := &fakeResolver{rec: rec}
+	handler := NewServerWithVendorData(vendorData).NewHandler(resolver, "tap100i0", 3)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -687,6 +700,81 @@ func TestVendorDataJSON(t *testing.T) {
 			require.NoError(t, json.NewDecoder(resp.Body).Decode(&v))
 		})
 	}
+}
+
+func TestVendorDataUsesFirstFullTagMatch(t *testing.T) {
+	dir := t.TempDir()
+	fedora := filepath.Join(dir, "fedora.json")
+	debian := filepath.Join(dir, "debian.json")
+	require.NoError(t, os.WriteFile(fedora, []byte("{\"name\":\"fedora\"}\n"), 0o600))
+	require.NoError(t, os.WriteFile(debian, []byte("{\"name\":\"debian\"}\n"), 0o600))
+
+	rec := testRecord()
+	rec.Config.Tags = []string{"fedora", "debian", "trixie"}
+	vendorData := []config.VendorDataConfig{
+		{File: fedora, Tags: []string{"fedora"}},
+		{File: debian, Tags: []string{"debian", "trixie"}},
+	}
+
+	for _, path := range []string{
+		"/openstack/latest/vendor_data.json",
+		"/openstack/latest/vendor_data2.json",
+	} {
+		resp := getWithVendorData(t, rec, path, vendorData)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "{\"name\":\"fedora\"}\n", body(t, resp))
+	}
+}
+
+func TestVendorDataEncodesNonJSONContentAsJSONString(t *testing.T) {
+	dir := t.TempDir()
+	fedora := filepath.Join(dir, "fedora.yaml")
+	require.NoError(t, os.WriteFile(fedora, []byte("#cloud-config\npackages:\n  - qemu-guest-agent\n"), 0o600))
+
+	rec := testRecord()
+	rec.Config.Tags = []string{"fedora"}
+	vendorData := []config.VendorDataConfig{{File: fedora, Tags: []string{"fedora"}}}
+
+	resp := getWithVendorData(t, rec, "/openstack/latest/vendor_data2.json", vendorData)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var got string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	assert.Equal(t, "#cloud-config\npackages:\n  - qemu-guest-agent\n", got)
+}
+
+func TestVendorDataRequiresAllTags(t *testing.T) {
+	dir := t.TempDir()
+	debian := filepath.Join(dir, "debian.json")
+	fallback := filepath.Join(dir, "fallback.json")
+	require.NoError(t, os.WriteFile(debian, []byte("{\"name\":\"debian\"}\n"), 0o600))
+	require.NoError(t, os.WriteFile(fallback, []byte("{\"name\":\"fallback\"}\n"), 0o600))
+
+	rec := testRecord()
+	rec.Config.Tags = []string{"debian"}
+	vendorData := []config.VendorDataConfig{
+		{File: debian, Tags: []string{"debian", "trixie"}},
+		{File: fallback},
+	}
+
+	resp := getWithVendorData(t, rec, "/openstack/latest/vendor_data2.json", vendorData)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "{\"name\":\"fallback\"}\n", body(t, resp))
+}
+
+func TestVendorDataReturnsEmptyObjectWhenNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	fedora := filepath.Join(dir, "fedora.json")
+	require.NoError(t, os.WriteFile(fedora, []byte("{\"name\":\"fedora\"}\n"), 0o600))
+
+	rec := testRecord()
+	rec.Config.Tags = []string{"debian"}
+	vendorData := []config.VendorDataConfig{{File: fedora, Tags: []string{"fedora"}}}
+
+	resp := getWithVendorData(t, rec, "/openstack/latest/vendor_data2.json", vendorData)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "{}\n", body(t, resp))
 }
 
 // ---------------------------------------------------------------------------
