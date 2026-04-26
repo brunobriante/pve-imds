@@ -71,15 +71,15 @@ type IssueClaims struct {
 	UUID     string
 	Name     string
 	Hostname string
-	Meta     map[string]string
+	Meta     map[string]any
 }
 
 // extraClaims is the JSON-serialisable form of the VM-specific extra claims.
 type extraClaims struct {
-	UUID     string            `json:"uuid"`
-	Name     string            `json:"name,omitempty"`
-	Hostname string            `json:"hostname,omitempty"`
-	Meta     map[string]string `json:"meta,omitempty"`
+	UUID     string         `json:"uuid"`
+	Name     string         `json:"name,omitempty"`
+	Hostname string         `json:"hostname,omitempty"`
+	Meta     map[string]any `json:"meta,omitempty"`
 }
 
 // Issue mints a signed JWT-SVID for ic and the requested audience. The token

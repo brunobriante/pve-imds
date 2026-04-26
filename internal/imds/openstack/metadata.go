@@ -32,11 +32,11 @@ type MetaData struct {
 	// LaunchIndex is always 0; Proxmox launches one instance at a time.
 	LaunchIndex int `json:"launch_index"`
 
-	// Meta holds arbitrary key-value pairs exposed as instance metadata.
-	// We populate it from PVE tags and the well-known pve:vmid / pve:node
+	// Meta holds arbitrary values exposed as instance metadata.
+	// We populate it with PVE tags and the well-known pve:vmid / pve:node
 	// identifiers. cloud-init also inspects Meta["dsmode"] to control
 	// datasource mode, which we intentionally omit.
-	Meta map[string]string `json:"meta,omitempty"`
+	Meta map[string]any `json:"meta,omitempty"`
 }
 
 // NetworkData is the JSON body served at /openstack/{version}/network_data.json.
@@ -113,12 +113,12 @@ type Service struct {
 
 // MetadataFromRecord builds a MetaData document from a resolved VMRecord.
 func MetadataFromRecord(rec *identity.VMRecord) MetaData {
-	meta := map[string]string{
+	meta := map[string]any{
 		"pve:vmid": strconv.Itoa(rec.VMID),
 		"pve:node": rec.Node,
 	}
-	for _, t := range rec.Config.Tags {
-		meta[t] = ""
+	if len(rec.Config.Tags) > 0 {
+		meta["pve:tags"] = rec.Config.Tags
 	}
 
 	uuid := rec.Config.SMBIOS["uuid"]
