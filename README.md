@@ -2,7 +2,7 @@
 
 An OpenStack and EC2 IMDS (Instance Metadata Service) compatible metadata service for virtual machines running in Proxmox.
 
-With `pve-imds`, an unmodified Linux [cloud image](https://cloud-images.ubuntu.com/) running [cloud-init](https://docs.cloud-init.io/en/latest/explanation/introduction.html) can reach `http://169.254.169.254` to retrieve not only instance metadata but also **custom [user data](https://docs.cloud-init.io/en/latest/explanation/format/index.html)** stored in the Proxmox VM *Notes* field. Eventually, `pve-imds` will also support a **signed identity document** that a VM can use to authenticate to a service like Vault.
+With `pve-imds`, an unmodified Linux [cloud image](https://cloud-images.ubuntu.com/) running [cloud-init](https://docs.cloud-init.io/en/latest/explanation/introduction.html) can reach `http://169.254.169.254` to retrieve instance metadata, **custom [user data](https://docs.cloud-init.io/en/latest/explanation/format/index.html)**, network configuration, vendor data, and signed identity tokens that a VM can use to authenticate to a service like Vault.
 
 ## Quick start
 
@@ -58,7 +58,7 @@ ssh_authorized_keys:
   - ssh-ed25519 AAAAC3NzaC1lZ...
 EOF
 
-# pve-imds reads user data from the contents 
+# pve-imds reads user data from the contents
 qm clone <TEMPLATE VMID> $(pvesh get /cluster/nextid) --description "$(echo '<!--#user-data'; cat user-data; echo '-->')" --name "my-test-vm"
 ```
 
@@ -66,6 +66,86 @@ qm clone <TEMPLATE VMID> $(pvesh get /cluster/nextid) --description "$(echo '<!-
 
 ```bash
 curl http://169.254.169.254/openstack/latest/meta_data.json
+```
+
+## VM notes data
+
+`pve-imds` reads per-VM cloud-init payloads from HTML comment blocks in the Proxmox VM *Notes* field. Multiple blocks can coexist in any order.
+
+### User data
+
+Embed user data with `<!--#user-data ... -->`. In OpenStack mode it is served at `/openstack/latest/user_data`; in EC2 mode it is served at `/latest/user-data`.
+
+```text
+<!--#user-data
+#cloud-config
+package_update: true
+packages:
+  - qemu-guest-agent
+-->
+```
+
+### Network config
+
+Embed cloud-init network config with `<!--#network-config ... -->`. In OpenStack mode, `pve-imds` converts this into `network_data.json` at `/openstack/latest/network_data.json`.
+
+```text
+<!--#network-config
+network:
+  version: 2
+  ethernets:
+    net0:
+      dhcp4: false
+      addresses:
+        - 192.0.2.10/24
+      routes:
+        - to: default
+          via: 192.0.2.1
+      nameservers:
+        addresses:
+          - 192.0.2.53
+-->
+```
+
+If no network-config block is present, OpenStack mode still serves network data for the VM NICs and defaults them to DHCP.
+
+## Vendor data
+
+Vendor data is configured globally in `config.yaml`, not in VM notes. Each entry points at a file and can optionally require a set of Proxmox VM tags. The first entry whose full tag list is present on the VM wins; entries without `tags` act as a fallback.
+
+```yaml
+vendor_data:
+  - file: /opt/vendor-data/fedora.yaml
+    tags:
+      - fedora
+  - file: /opt/vendor-data/debian.yaml
+    tags:
+      - debian
+      - trixie
+  - file: /opt/vendor-data/default.yaml
+```
+
+OpenStack mode serves the selected payload at both `/openstack/latest/vendor_data.json` and `/openstack/latest/vendor_data2.json`. If the file already contains valid JSON it is served as-is; otherwise `pve-imds` JSON-encodes the file contents as a string so cloud-init can consume raw cloud-config, YAML, or text from the JSON endpoint. If no entry matches, both endpoints return `{}`.
+
+## Configuration
+
+The daemon can be configured with a YAML file passed via `--config`.
+
+```yaml
+log_level: info
+fx_logging: false
+emulate: openstack
+pprof_addr: ""
+metrics_addr: ":9100"
+
+jwtsvid:
+  private_key_path: /etc/pve/local/pve-ssl.key
+  token_ttl: 5m
+  nodes_dir: /etc/pve/nodes
+  trust_domain: pve.example.com
+
+vendor_data:
+  - file: /opt/vendor-data/default.yaml
 ```
 
 ## Why network-based configuration?
