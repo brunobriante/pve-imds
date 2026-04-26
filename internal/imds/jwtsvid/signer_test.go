@@ -41,7 +41,7 @@ func testClaims(vmid int) IssueClaims {
 		UUID:     "86f5aa5e-08a3-40cb-a642-efad20b5b061",
 		Name:     "test-vm",
 		Hostname: "test-vm",
-		Meta:     map[string]string{"pve:vmid": "100", "pve:node": "pve1"},
+		Meta:     map[string]any{"pve:vmid": "100", "pve:node": "pve1"},
 	}
 }
 
@@ -155,7 +155,7 @@ func TestIssueExtraClaims(t *testing.T) {
 		UUID:     "test-uuid",
 		Name:     "my-vm",
 		Hostname: "my-vm",
-		Meta:     map[string]string{"pve:vmid": "100", "pve:node": "node1"},
+		Meta:     map[string]any{"pve:vmid": "100", "pve:node": "node1", "pve:tags": []string{"prod", "web"}},
 	}
 	token, err := s.Issue(ic, "aud")
 	require.NoError(t, err)
@@ -169,6 +169,7 @@ func TestIssueExtraClaims(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "100", meta["pve:vmid"])
 	assert.Equal(t, "node1", meta["pve:node"])
+	assert.ElementsMatch(t, []any{"prod", "web"}, meta["pve:tags"])
 }
 
 func TestKIDConsistency(t *testing.T) {

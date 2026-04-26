@@ -105,9 +105,8 @@ When decoded, a token contains these claims:
   "iat": 1775087593,
   "jti": "6023722e-2af9-4f92-8a45-1fb98ccf4e11",
   "meta": {
-    "another-tag": "",
-    "centos-stream-9": "",
     "pve:node": "test-node",
+    "pve:tags": ["another-tag", "centos-stream-9"],
     "pve:vmid": "106"
   },
   "name": "test-host",

@@ -197,11 +197,11 @@ func TestMetaDataMetaContainsTags(t *testing.T) {
 	var md MetaData
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&md))
 
-	// PVE bare tags appear as keys with empty values.
-	_, hasProd := md.Meta["prod"]
-	_, hasWeb := md.Meta["web"]
-	assert.True(t, hasProd, "tag 'prod' should be present in meta")
-	assert.True(t, hasWeb, "tag 'web' should be present in meta")
+	tags, ok := md.Meta["pve:tags"].([]any)
+	require.True(t, ok, "pve:tags should contain the VM tag list")
+	assert.ElementsMatch(t, []any{"prod", "web"}, tags)
+	assert.NotContains(t, md.Meta, "prod")
+	assert.NotContains(t, md.Meta, "web")
 }
 
 // ---------------------------------------------------------------------------
